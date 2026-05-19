@@ -26,11 +26,5 @@ export LOCAL_RANK=0
 # Go to your working directory
 cd /scratch/cwilczewski/physicsnemo/temp
 
-# Require exactly one argument: noise level
-if [ "$#" -ne 1 ]; then
-	echo "Usage: $0 <noise_level>"
-	exit 1
-fi
-
 # Run inside Apptainer
-apptainer exec --nv /scratch/cwilczewski/physicsnemo/physicsnemo_26.03.sif python test_inverse_darcy.py "$1"
+apptainer exec --nv /scratch/cwilczewski/physicsnemo/physicsnemo_26.03.sif python test_inverse_darcy.py

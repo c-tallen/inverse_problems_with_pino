@@ -22,9 +22,9 @@ hydra:
 
 start_lr: 0.001
 gamma: 0.99948708
-max_epochs: 50
+max_epochs: 200
 
-batch_size: 4
+batch_size: 32
 validation_batch_size: 1
 
 data:
@@ -36,7 +36,7 @@ scaling:
   permeability: 4.49996e00
   darcy: 3.88433e-03
 
-physics_weight: 10.0
+physics_weight: 1.0
 physics_residual_normalizer: 240.0
 physics_balance_eps: 1.0e-8
 physics_forcing_term: 1.0

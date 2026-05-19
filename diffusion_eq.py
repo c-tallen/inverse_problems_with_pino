@@ -26,3 +26,40 @@ class Diffusion(PDE):
                 - Q_var
             ),
         }
+
+
+class Burgers1D(PDE):
+    """1D viscous Burgers' equation: u_t + u * u_x - nu * u_xx = 0.
+
+    In symbolic form:
+
+        ∂u/∂t + u ∂u/∂x - ν ∂²u/∂x² = 0
+
+    where:
+        u  = solution field
+        nu = viscosity / diffusion coefficient
+    """
+
+    def __init__(self, u="u", nu="nu", time=True):
+        """Initialize with solution variable *u* and viscosity *nu*."""
+        x = Symbol("x")
+        t = Symbol("t")
+
+        iv = {"x": x, "t": t} if time else {"x": x}
+
+        u_var = Function(u)(*iv.values())
+
+        if isinstance(nu, str):
+            nu_var = Function(nu)(*iv.values())
+        elif isinstance(nu, (int, float)):
+            nu_var = Number(nu)
+        else:
+            nu_var = nu
+
+        self.equations = {
+            f"burgers_{u}": (
+                (u_var.diff(t) if time else 0)
+                + u_var * u_var.diff(x)
+                - nu_var * u_var.diff(x, 2)
+            )
+        }

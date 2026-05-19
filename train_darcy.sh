@@ -1,11 +1,11 @@
 #!/bin/bash
-#SBATCH --job-name=darcy_physics_fno
+#SBATCH --job-name=darcy_fno
 #SBATCH --partition=gpu-a100-small
 #SBATCH -n 1
 #SBATCH -c 1
 #SBATCH --gpus-per-task=1
 #SBATCH --mem-per-cpu=8000MB
-#SBATCH --time=00:40:00
+#SBATCH --time=02:00:00
 #SBATCH --output=logs/darcy_physics_fno_%j.out
 #SBATCH --error=logs/darcy_physics_fno_%j.err
 
@@ -26,5 +26,5 @@ export LOCAL_RANK=0
 # Go to your working directory
 cd /scratch/cwilczewski/physicsnemo/temp
 
-# Run inside Apptainer
+# Run inside Apptainer --config-name config_fno_a100
 apptainer exec --nv /scratch/cwilczewski/physicsnemo/physicsnemo_26.03.sif python inverse_darcy_fno.py

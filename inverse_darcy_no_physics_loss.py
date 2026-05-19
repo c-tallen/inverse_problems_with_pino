@@ -35,7 +35,7 @@ from diffusion_eq import Diffusion
 from utils import  HDF5MapStyleDataset, CustomDataset
 
 
-def validation_step(model, dataloader, epoch, permeability_scale, darcy_scale, phy_informer, physics_weight, residual_normalizer):
+def validation_step(model, dataloader, epoch, permeability_scale, darcy_scale, physics_weight, residual_normalizer):
     """Validation Step"""
     model.eval()
 
@@ -50,19 +50,6 @@ def validation_step(model, dataloader, epoch, permeability_scale, darcy_scale, p
             out = model(u_scaled)
 
             data_loss_epoch += F.mse_loss(k_scaled, out).item()
-
-            k_pred = out * permeability_scale
-            residuals = phy_informer.forward(
-                {
-                    "u": u,
-                    "k": k_pred,
-                }
-            )
-            pde_out_arr = residuals["diffusion_u"]
-            pde_out_arr = F.pad(
-                pde_out_arr[:, :, 2:-2, 2:-2], [2, 2, 2, 2], "constant", 0
-            )
-            physics_loss_epoch += F.l1_loss(pde_out_arr, torch.zeros_like(pde_out_arr)).item()
 
         # convert data to numpy
         expected_unscaled = k.detach().cpu().numpy()
@@ -138,8 +125,6 @@ def main(cfg: DictConfig):
 
     validation_dataloader = DataLoader(validation_dataset, batch_size=cfg.validation_batch_size, shuffle=False)
 
-    fd_dx = 1.0 / float(resolution)
-
     model = FNO(
         in_channels=cfg.model.fno.in_channels,
         out_channels=cfg.model.fno.out_channels,
@@ -151,14 +136,6 @@ def main(cfg: DictConfig):
         num_fno_modes=cfg.model.fno.num_fno_modes,
         padding=cfg.model.fno.padding,
     ).to(device)
-    
-    phy_informer = PhysicsInformer(
-        required_outputs=["diffusion_u"],
-        equations=darcy,
-        grad_method="finite_difference",
-        device=str(device),
-        fd_dx=fd_dx,
-    )
 
     optimizer = torch.optim.Adam(
         model.parameters(),
@@ -168,7 +145,7 @@ def main(cfg: DictConfig):
     )
 
     scheduler = torch.optim.lr_scheduler.ExponentialLR(optimizer, gamma=cfg.gamma)
-    print(f"Checkpoint directory: {to_absolute_path('./checkpoints')}")
+    
     loaded_epoch = load_checkpoint(
         "./checkpoints",
         models=model,
@@ -176,8 +153,6 @@ def main(cfg: DictConfig):
         scheduler=scheduler,
         device=device,
     )
-    
-    fixed_physics_weight = None
 
     for epoch in range(loaded_epoch + 1, cfg.max_epochs):
         # wrap epoch in launch logger for console logs
@@ -201,25 +176,12 @@ def main(cfg: DictConfig):
                 k_pred = out_scaled * permeability_scale
                 
                 assert out_scaled.shape == k_scaled.shape, f"Output shape {out_scaled.shape} does not match target shape {k_scaled.shape}"
-                residuals = phy_informer.forward(
-                    {
-                        "u": u,
-                        "k": k_pred,
-                    }
-                )
-                pde_out_arr = residuals["diffusion_u"]
-
-                pde_out_arr = F.pad(
-                    pde_out_arr[:, :, 2:-2, 2:-2], [2, 2, 2, 2], "constant", 0
-                )
-                loss_pde = F.l1_loss(pde_out_arr, torch.zeros_like(pde_out_arr))
-                weighted_pde = (cfg.physics_weight / resolution) * loss_pde
                 
                 # Compute data loss
                 loss_data = F.mse_loss(k_scaled, out_scaled)
 
                 # Compute total loss
-                loss = loss_data + weighted_pde
+                loss = loss_data #+ weighted_pde
 
                 # Backward pass and optimizer and learning rate update
                 loss.backward()
@@ -227,9 +189,6 @@ def main(cfg: DictConfig):
                 log.log_minibatch(
                     {
                         "loss_data": loss_data.detach().item(),
-                        "loss_pde": loss_pde.detach().item(),
-                        "weighted_pde": weighted_pde.detach().item(),
-                        "physics_weight": cfg.physics_weight / 240,
                         "loss_total": loss.detach().item(),
                     }
                 )
@@ -243,7 +202,6 @@ def main(cfg: DictConfig):
                 epoch,
                 permeability_scale,
                 darcy_scale,
-                phy_informer,
                 cfg.physics_weight,
                 residual_normalizer,
             )
