@@ -30,8 +30,8 @@ from physicsnemo.sym.eq.phy_informer import PhysicsInformer
 from omegaconf import DictConfig
 from torch.utils.data import DataLoader
 
-from utils import HDF5MapStyleDataset, CustomDataset
 from diffusion_eq import Diffusion
+from utils import  HDF5MapStyleDataset, CustomDataset
 
 
 def validation_step(model, dataloader, epoch):
@@ -41,33 +41,33 @@ def validation_step(model, dataloader, epoch):
     with torch.no_grad():
         loss_epoch = 0
         for data in dataloader:
-            kcoeff = data["permeability"] / 4.49996e00
-            flow = data["darcy"] / 3.88433e-03
-            out = model(flow)
+            k = data["permeability"] 
+            k_scaled = k / 4.49996e00
+            u = data["darcy"]
+            u_scaled = u / 3.88433e-03
+            out = model(u_scaled)
 
-            outvar = kcoeff
-            loss_epoch += F.mse_loss(outvar, out)
+            loss_epoch += F.mse_loss(k_scaled, out)
 
         # convert data to numpy
-        outvar = outvar.detach().cpu().numpy()
+        expected_unscaled = k.detach().cpu().numpy()
+        expected = k_scaled.detach().cpu().numpy()
         predvar = out.detach().cpu().numpy()
+        predvar_unscaled = predvar * 4.49996e00
 
         # plotting
         fig, ax = plt.subplots(1, 3, figsize=(25, 5))
 
-        d_min = np.min(outvar[0, 0])
-        d_max = np.max(outvar[0, 0])
-
-        im = ax[0].imshow(outvar[0, 0], vmin=d_min, vmax=d_max)
-        plt.colorbar(im, ax=ax[0])
-        im = ax[1].imshow(predvar[0, 0], vmin=d_min, vmax=d_max)
-        plt.colorbar(im, ax=ax[1])
-        im = ax[2].imshow(np.abs(predvar[0, 0] - outvar[0, 0]))
-        plt.colorbar(im, ax=ax[2])
-
-        ax[0].set_title("True")
-        ax[1].set_title("Pred")
-        ax[2].set_title("Difference")
+        def plot_with_colorbar(i, data, title):
+            d_min = np.min(data[0, 0])
+            d_max = np.max(data[0, 0])
+            im = ax[i].imshow(data[0, 0], vmin=d_min, vmax=d_max)
+            plt.colorbar(im, ax=ax[i])
+            ax[i].set_title(title)
+        
+        plot_with_colorbar(0, expected_unscaled, "True")
+        plot_with_colorbar(1, predvar_unscaled, "Pred")
+        plot_with_colorbar(2, np.abs(predvar_unscaled - expected_unscaled), "Difference")
 
         fig.savefig(f"results_{epoch}.png")
         plt.close()
@@ -84,9 +84,10 @@ def main(cfg: DictConfig):
         device = torch.device("cpu")
 
     LaunchLogger.initialize()
+    DistributedManager.initialize()
     
     # Use Diffusion equation for the Darcy PDE
-    forcing_fn = 1.0 * 4.49996e00 * 3.88433e-03  # after scaling
+    forcing_fn = 1.0
     darcy = Diffusion(T="u", time=False, dim=2, D="k", Q=forcing_fn)
 
     dataset = CustomDataset(
@@ -152,19 +153,20 @@ def main(cfg: DictConfig):
                 k = data["permeability"]
                 u = data["darcy"]
                 # TODO: Deal with scaling
-                invar = u / 3.88433e-03
-                outvar = k / 4.49996e00
+                u_scaled = u / 3.88433e-03
+                k_scaled = k / 4.49996e00
                 
-                if epoch == 0: print(invar.shape, outvar.shape)
+                if epoch == 0: print(u_scaled.shape, k_scaled.shape)
 
                 # Compute forward pass
-                out = model(invar)
+                out_scaled = model(u_scaled)
+                k_pred = out_scaled * 4.49996e00
                 
-                assert out.shape == outvar.shape, f"Output shape {out.shape} does not match target shape {outvar.shape}"
+                assert out_scaled.shape == k_scaled.shape, f"Output shape {out_scaled.shape} does not match target shape {k_scaled.shape}"
                 residuals = phy_informer.forward(
                     {
-                        "u": invar,
-                        "k": out,
+                        "u": u,
+                        "k": k_pred,
                     }
                 )
                 pde_out_arr = residuals["diffusion_u"]
@@ -176,7 +178,7 @@ def main(cfg: DictConfig):
                 weighted_pde = (cfg.physics_weight / 240) * loss_pde
                 
                 # Compute data loss
-                loss_data = F.mse_loss(outvar, out)
+                loss_data = F.mse_loss(k_scaled, out_scaled)
 
                 # Compute total loss
                 loss = loss_data + weighted_pde
