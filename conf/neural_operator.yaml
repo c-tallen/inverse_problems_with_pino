@@ -18,11 +18,12 @@ hydra:
   job:
     chdir: True
   run:
-    dir: ./inverse_fno_outputs/${now:%Y-%m-%d}/full_dataset_100_epochs_${now:%H-%M-%S}
+    dir: ./neural_operator_outputs/pino2
 
-start_lr: 0.001
-gamma: 0.99948708
 max_epochs: 100
+step_size: 100
+gamma: 0.5
+start_lr: 0.001
 
 batch_size: 1
 validation_batch_size: 1
@@ -30,29 +31,28 @@ validation_batch_size: 1
 data:
   train_path: ./datasets/Darcy_241/piececonst_r241_N1024_smooth1.hdf5
   validation_path: ./datasets/Darcy_241/piececonst_r241_N1024_smooth2.hdf5
-  resolution: 240
-
-scaling:
-  permeability: 4.49996e00
-  darcy: 3.88433e-03
+  resolution: 241
 
 mappings:
-  permeability: "Kcoeff"
+  permeability: "coeff"
   darcy: "sol"
-
-physics_weight: 1.0
-physics_residual_normalizer: 240.0
-physics_balance_eps: 1.0e-8
-physics_forcing_term: 1.0
 
 model:
   fno:
     in_channels: 1
     out_channels: 1
     decoder_layers: 1
-    decoder_layer_size: 32
+    decoder_layer_size: 128
     dimension: 2
-    latent_channels: 48
-    num_fno_layers: 5
-    num_fno_modes: 16
+    latent_channels: 32
+    num_fno_layers: 4
+    num_fno_modes: 12
     padding: 9
+
+physics_weight: 0.2
+physics_forcing_term: 1.0
+tv_weight: 0.01
+
+scaling:
+  permeability: 1.0
+  darcy: 1.0

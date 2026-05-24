@@ -1,3 +1,6 @@
+from datetime import datetime
+import sys
+
 import numpy as np
 import torch
 import physicsnemo
@@ -9,7 +12,12 @@ from matplotlib.axes import Axes
 from utils import CustomDataset
 from physicsnemo.sym.eq.phy_informer import PhysicsInformer
 from diffusion_eq import Diffusion
+import pathlib
 
+
+def darcy_mask1(x: torch.Tensor) -> torch.Tensor:
+
+    return torch.sigmoid(x) * 9.0 + 3.0
 
 # TODO: Make hardcoded values into config options
 def get_noisy_data(u, noise_levels, std: float):
@@ -34,18 +42,19 @@ def get_noisy_data(u, noise_levels, std: float):
     assert u_noisy.shape[0] == noise_levels_tensor.shape[0]
     return u_noisy
 
-def run_test(noise_levels) -> tuple[list[float], list[float], list[float]]:
+def run_test(noise_levels, model_path, output_dir) -> tuple[list[float], list[float], list[float]]:
     if torch.cuda.is_available():
         device = torch.device("cuda")
     else:
         device = torch.device("cpu")
     print("Loading model and dataset on device:", device)
-    model = physicsnemo.Module.from_checkpoint("model.mdlus").to(device)
+    
+    model = physicsnemo.Module.from_checkpoint(model_path).to(device)
     model.eval()
-    dataset = CustomDataset("./datasets/Darcy_241/piececonst_r241_N1024_smooth2.hdf5", device=device, mappings={"permeability": "Kcoeff", "darcy": "sol"})
+    dataset = CustomDataset("./datasets/Darcy_241/piececonst_r241_N1024_smooth2.hdf5", device=device, mappings={"permeability": "coeff", "darcy": "sol"})
     dataloader = DataLoader(dataset, batch_size=1, shuffle=False)
     
-    fd_dx = 1.0 / 240.0  # Assuming resolution is 240, adjust if different
+    fd_dx = 1.0 / 240.0  # Assuming resolution is 241, adjust if different
     forcing_fn = 1.0
     darcy = Diffusion(T="u", time=False, dim=2, D="k", Q=forcing_fn)
     phy_informer = PhysicsInformer(
@@ -62,49 +71,72 @@ def run_test(noise_levels) -> tuple[list[float], list[float], list[float]]:
         loss_rel_l2 = [0.0 for _ in noise_levels]
         physics_loss = [0.0 for _ in noise_levels]
         sample_count = 0
+
         for sample_i, data in enumerate(dataloader):
-            k = data["permeability"] 
-            k_scaled = k / 4.49996e00
+            k = data["permeability"]
             u = data["darcy"]
-            u_noisy = get_noisy_data(u, noise_levels, std=3.88433e-03)
-            
-            u_scaled = u_noisy / 3.88433e-03
-            out = model(u_scaled)
-            print(out.shape)
-            print(f"Processing sample {sample_i}")
+
+            # Match current training config: no scaling
+            k_scaled = k
+
+            # Add noise to unscaled input u
+            u_noisy = get_noisy_data(u, noise_levels, std=torch.std(u).item())
+
+            # Match current training config: no scaling
+            u_scaled = u_noisy
+
+            # Model outputs raw values; convert to permeability range [3, 12]
+            out_raw = model(u_scaled)
+            out = darcy_mask1(out_raw)
+
+            print(f"Processing sample {sample_i}, output shape: {out.shape}")
+
             expected_unscaled = k.detach().cpu().numpy()
-            # expected = k_scaled.detach().cpu().numpy()
-            pred_batch = out.detach().cpu().numpy()
-            pred_unscaled_batch = pred_batch * 4.49996e00
+            pred_unscaled_batch = out.detach().cpu().numpy()
+
             mse_per_sample = []
+
             for i in range(len(noise_levels)):
-                pred_i = out[i:i+1]  # Shape: [1, 1, H, W]
-                pred_i_unscaled = pred_i * 4.49996e00
-                mse = F.mse_loss(k_scaled, pred_i).item()
+                pred_i = out[i:i+1]
+
+                mse = F.mse_loss(pred_i, k_scaled).item()
+
                 rel_l2 = (
-                    torch.linalg.norm(pred_i_unscaled - k) / torch.linalg.norm(k)
+                    torch.linalg.norm(pred_i - k) / torch.linalg.norm(k)
                 ).item()
+
                 mse_per_sample.append(mse)
                 loss_mse[i] += mse
                 loss_rel_l2[i] += rel_l2
-                # calculate physics loss
-                assert pred_i.shape == k_scaled.shape, f"Output shape {pred_i.shape} does not match target shape {k_scaled.shape}"
+
+                assert pred_i.shape == k.shape, (
+                    f"Output shape {pred_i.shape} does not match target shape {k.shape}"
+                )
+
                 residuals = phy_informer.forward(
                     {
                         "u": u,
                         "k": pred_i,
                     }
                 )
+
                 pde_out_arr = residuals["diffusion_u"]
+                pde_core = pde_out_arr[:, :, 2:-2, 2:-2]
 
-                pde_out_arr = F.pad(
-                    pde_out_arr[:, :, 2:-2, 2:-2], [2, 2, 2, 2], "constant", 0
+                physics_loss[i] += torch.mean(torch.abs(pde_core)).item()
+
+            if sample_i < 5:
+                plot_recovered(
+                    noise_levels,
+                    sample_i,
+                    u,
+                    u_noisy,
+                    expected_unscaled,
+                    pred_unscaled_batch,
+                    mse_per_sample,
+                    output_dir,
                 )
-                physics_loss[i] += F.l1_loss(pde_out_arr, torch.zeros_like(pde_out_arr)).item()
 
-            # plotting
-            if sample_i < 5:  # Limit the number of plotted samples
-                plot_recovered(noise_levels, sample_i, u, u_noisy, expected_unscaled, pred_unscaled_batch, mse_per_sample)
             sample_count += 1
 
         if sample_count > 0:
@@ -114,7 +146,7 @@ def run_test(noise_levels) -> tuple[list[float], list[float], list[float]]:
             physics_loss = [loss / sample_count for loss in physics_loss]
         return loss_mse, loss_rel_l2, physics_loss
 
-def plot_recovered(noise_levels, sample_i, u, u_noisy, expected_unscaled, predvar_unscaled, mse_per_sample):
+def plot_recovered(noise_levels, sample_i, u, u_noisy, expected_unscaled, predvar_unscaled, mse_per_sample, output_dir):
     rows = 1 + len(noise_levels)
     cols = 3
     fig, ax = plt.subplots(rows, cols, figsize=(cols * 4.6, rows * 3.2), squeeze=False, constrained_layout=True)
@@ -134,21 +166,27 @@ def plot_recovered(noise_levels, sample_i, u, u_noisy, expected_unscaled, predva
     ax[0, 2].axis("off")
     ax[0, 2].text(0.5, 0.5, "No prediction\nfor clean input", ha="center", va="center", fontsize=10)
 
-    diff_vmax = max(np.abs(predvar_unscaled[i, 0] - expected_unscaled[0, 0]).max() for i in range(len(noise_levels)))
     for i in range(len(noise_levels)):
         row = i + 1
         plot_with_colorbar(0, row, u_noisy[i, 0].cpu().numpy(), f"Noisy Input\nNoise: {noise_levels[i]}", cmap="viridis")
         plot_with_colorbar(1, row, predvar_unscaled[i, 0], f"Prediction\nNoise: {noise_levels[i]}", cmap="magma")
-        plot_with_colorbar(2, row, np.abs(predvar_unscaled[i, 0] - expected_unscaled[0, 0]), f"Abs Diff\nMSE: {mse_per_sample[i]:.3e}", cmap="inferno", vmin=0.0, vmax=diff_vmax)
+        diff = np.abs(predvar_unscaled[i, 0] - expected_unscaled[0, 0])
+        plot_with_colorbar(2, row, diff, f"Abs Diff\nMSE: {mse_per_sample[i]:.3e}", cmap="inferno")
 
-    fig.savefig(f"./test_results/results_{sample_i}.png", dpi=200, bbox_inches="tight")
+    fig.savefig(output_dir / f"results_{sample_i}.png", dpi=200, bbox_inches="tight")
 
     plt.close(fig)
 
 
 if __name__ == "__main__":
-    noise_levels = noise_levels = [0.0, 0.01, 0.05, 0.1, 0.2, 0.5, 1.0]
-    loss_mse, loss_rel_l2, physics_loss = run_test(noise_levels)
+    noise_levels = [0.0, 0.01, 0.05, 0.1, 0.2, 0.5, 1.0]
+    model_path = sys.argv[1]
+    model_name = pathlib.Path(model_path).stem + "_" + pathlib.Path(model_path).parents[1].name
+    timestamp = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
+    output_dir = pathlib.Path("./test_results_original_neural_operator_method") / model_name / timestamp
+    output_dir.mkdir(parents=True, exist_ok=True)
+    
+    loss_mse, loss_rel_l2, physics_loss = run_test(noise_levels, model_path, output_dir)
     print("Total MSE for each noise level:")
     for i, error in enumerate(loss_mse):
         print(f"Noise level {noise_levels[i]}: {error}")
@@ -158,3 +196,8 @@ if __name__ == "__main__":
     print("Total physics loss for each noise level:")
     for i, error in enumerate(physics_loss):
         print(f"Noise level {noise_levels[i]}: {error}")
+        
+    with open(output_dir / "results_summary.txt", "w") as f:
+        f.write("Noise Level\tMSE Loss\tRelative L2 Loss\tPhysics Loss\n")
+        for i in range(len(noise_levels)):
+            f.write(f"{noise_levels[i]}\t{loss_mse[i]:.6e}\t{loss_rel_l2[i]:.6e}\t{physics_loss[i]:.6e}\n")

@@ -28,45 +28,68 @@ from physicsnemo.distributed import DistributedManager
 from physicsnemo.utils.checkpoint import save_checkpoint, load_checkpoint
 from physicsnemo.models.fno import FNO
 from physicsnemo.sym.eq.phy_informer import PhysicsInformer
-from omegaconf import DictConfig
+from omegaconf import DictConfig, OmegaConf
 from torch.utils.data import DataLoader
 
 from diffusion_eq import Diffusion
 from utils import  HDF5MapStyleDataset, CustomDataset
 
 
-def validation_step(model, dataloader, epoch, permeability_scale, darcy_scale, phy_informer, physics_weight, residual_normalizer):
+def darcy_mask1(x: torch.Tensor) -> torch.Tensor:
+    """Map raw network output to permeability range [3, 12]."""
+    return torch.sigmoid(x) * 9.0 + 3.0
+
+
+def darcy_mask2(x: torch.Tensor) -> torch.Tensor:
+    """Binarized permeability mask used only for visualization in the original code."""
+    x = torch.sigmoid(x)
+    x = torch.where(x > 0.5, torch.ones_like(x), torch.zeros_like(x))
+    return x * 9.0 + 3.0
+
+
+def total_variance(x: torch.Tensor) -> torch.Tensor:
+    """
+    Total variation regularization for NCHW tensors.
+    x shape: [batch, channels, height, width]
+    """
+    tv_x = torch.mean(torch.abs(x[:, :, :, :-1] - x[:, :, :, 1:]))
+    tv_y = torch.mean(torch.abs(x[:, :, :-1, :] - x[:, :, 1:, :]))
+    return tv_x + tv_y
+
+
+def relative_l2_loss(pred: torch.Tensor, target: torch.Tensor, eps: float = 1e-12) -> torch.Tensor:
+    """
+    Similar spirit to LpLoss(size_average=True).
+    Computes mean relative L2 error over batch.
+    """
+    batch_size = pred.shape[0]
+    pred_flat = pred.reshape(batch_size, -1)
+    target_flat = target.reshape(batch_size, -1)
+
+    diff_norm = torch.linalg.norm(pred_flat - target_flat, dim=1)
+    target_norm = torch.linalg.norm(target_flat, dim=1)
+
+    return torch.mean(diff_norm / (target_norm + eps))
+
+def validation_step(model, dataloader, epoch, permeability_scale, darcy_scale):
     """Validation Step"""
     model.eval()
 
     with torch.no_grad():
         data_loss_epoch = 0.0
-        physics_loss_epoch = 0.0
         for data in dataloader:
             k = data["permeability"] 
             k_scaled = k / permeability_scale
             u = data["darcy"]
             u_scaled = u / darcy_scale
-            out = model(u_scaled)
+            out_raw = model(u_scaled)
+            out_scaled = darcy_mask1(out_raw)
 
-            data_loss_epoch += F.mse_loss(k_scaled, out).item()
-
-            k_pred = out * permeability_scale
-            residuals = phy_informer.forward(
-                {
-                    "u": u,
-                    "k": k_pred,
-                }
-            )
-            pde_out_arr = residuals["diffusion_u"]
-            pde_out_arr = F.pad(
-                pde_out_arr[:, :, 2:-2, 2:-2], [2, 2, 2, 2], "constant", 0
-            )
-            physics_loss_epoch += F.l1_loss(pde_out_arr, torch.zeros_like(pde_out_arr)).item()
+            data_loss_epoch += relative_l2_loss(out_scaled, k_scaled).item()
 
         # convert data to numpy
         expected_unscaled = k.detach().cpu().numpy()
-        predvar = out.detach().cpu().numpy()
+        predvar = out_scaled.detach().cpu().numpy()
         predvar_unscaled = predvar * permeability_scale
 
         # plotting
@@ -85,18 +108,10 @@ def validation_step(model, dataloader, epoch, permeability_scale, darcy_scale, p
 
         fig.savefig(f"results_{epoch}.png")
         plt.close()
-        data_loss_epoch /= len(dataloader)
-        physics_loss_epoch /= len(dataloader)
-        weighted_physics_loss = (physics_weight / residual_normalizer) * physics_loss_epoch
-        return {
-            "validation_data_loss": data_loss_epoch,
-            "validation_physics_loss": physics_loss_epoch,
-            "validation_weighted_physics_loss": weighted_physics_loss,
-            "validation_total_loss": data_loss_epoch + weighted_physics_loss,
-        }
+        return data_loss_epoch / len(dataloader)
 
 
-@hydra.main(version_base="1.3", config_path="conf", config_name="config_fno.yaml")
+@hydra.main(version_base="1.3", config_path="conf", config_name="neural_operator.yaml")
 def main(cfg: DictConfig):
     """Main function for the Darcy physics-informed FNO."""
     # CUDA support
@@ -110,8 +125,8 @@ def main(cfg: DictConfig):
 
     permeability_scale = cfg.scaling.permeability
     darcy_scale = cfg.scaling.darcy
-    residual_normalizer = cfg.physics_residual_normalizer
     resolution = cfg.data.resolution
+    mappings_dict = OmegaConf.to_container(cfg.mappings, resolve=True)
     
     # Use Diffusion equation for the Darcy PDE
     forcing_fn = cfg.physics_forcing_term
@@ -119,26 +134,22 @@ def main(cfg: DictConfig):
 
     dataset = CustomDataset(
         to_absolute_path(cfg.data.train_path),
-        mappings={
-            "permeability": "Kcoeff",
-            "darcy": "sol"
-        },
-        device=device
+        mappings=mappings_dict,
+        device=device,
+        res=resolution,
     )
     validation_dataset = CustomDataset(
         to_absolute_path(cfg.data.validation_path),
-        mappings={
-            "permeability": "Kcoeff",
-            "darcy": "sol"
-        },
-        device=device
+        mappings=mappings_dict,
+        device=device,
+        res=resolution,
     )
 
     dataloader = DataLoader(dataset, batch_size=cfg.batch_size, shuffle=True)
 
     validation_dataloader = DataLoader(validation_dataset, batch_size=cfg.validation_batch_size, shuffle=False)
 
-    fd_dx = 1.0 / float(resolution)
+    fd_dx = 1.0 / float(resolution - 1)
 
     model = FNO(
         in_channels=cfg.model.fno.in_channels,
@@ -151,85 +162,100 @@ def main(cfg: DictConfig):
         num_fno_modes=cfg.model.fno.num_fno_modes,
         padding=cfg.model.fno.padding,
     ).to(device)
-    
-    phy_informer = PhysicsInformer(
-        required_outputs=["diffusion_u"],
-        equations=darcy,
-        grad_method="finite_difference",
-        device=str(device),
-        fd_dx=fd_dx,
-    )
+    if cfg.physics_weight > 0.0:
+        phy_informer = PhysicsInformer(
+            required_outputs=["diffusion_u"],
+            equations=darcy,
+            grad_method="finite_difference",
+            device=str(device),
+            fd_dx=fd_dx,
+        )
+    else:
+        phy_informer = None
 
     optimizer = torch.optim.Adam(
         model.parameters(),
-        betas=(0.9, 0.999),
         lr=cfg.start_lr,
-        weight_decay=0.0,
+        weight_decay=1e-5,
     )
 
-    scheduler = torch.optim.lr_scheduler.ExponentialLR(optimizer, gamma=cfg.gamma)
-    print(f"Checkpoint directory: {to_absolute_path('./checkpoints')}")
-    loaded_epoch = load_checkpoint(
-        "./checkpoints",
-        models=model,
-        optimizer=optimizer,
-        scheduler=scheduler,
-        device=device,
+    scheduler = torch.optim.lr_scheduler.StepLR(
+        optimizer,
+        step_size=cfg.step_size,
+        gamma=cfg.gamma,
     )
     
-    fixed_physics_weight = None
-
-    for epoch in range(loaded_epoch + 1, cfg.max_epochs):
+    print("Dataloader length:", len(dataloader))
+    for epoch in range(cfg.max_epochs):
         # wrap epoch in launch logger for console logs
         with LaunchLogger(
             "train",
             epoch=epoch,
             num_mini_batch=len(dataloader),
-            epoch_alert_freq=10,
+            epoch_alert_freq=len(dataloader) // 20,
         ) as log:
             for data in dataloader:
                 optimizer.zero_grad()
+
                 k = data["permeability"]
                 u = data["darcy"]
+
                 u_scaled = u / darcy_scale
                 k_scaled = k / permeability_scale
-                
-                if epoch == 0: print(u_scaled.shape, k_scaled.shape)
 
-                # Compute forward pass
-                out_scaled = model(u_scaled)
+                # Inverse model: u -> k
+                out_raw = model(u_scaled)
+
+                # Original code constrains predicted permeability to [3, 12]
+                out_scaled = darcy_mask1(out_raw)
+
+                # Unscale for PDE loss
                 k_pred = out_scaled * permeability_scale
-                
-                assert out_scaled.shape == k_scaled.shape, f"Output shape {out_scaled.shape} does not match target shape {k_scaled.shape}"
-                residuals = phy_informer.forward(
-                    {
-                        "u": u,
-                        "k": k_pred,
-                    }
+
+                assert out_scaled.shape == k_scaled.shape, (
+                    f"Output shape {out_scaled.shape} does not match target shape {k_scaled.shape}"
                 )
-                pde_out_arr = residuals["diffusion_u"]
 
-                pde_out_arr = F.pad(
-                    pde_out_arr[:, :, 2:-2, 2:-2], [2, 2, 2, 2], "constant", 0
-                )
-                loss_pde = F.l1_loss(pde_out_arr, torch.zeros_like(pde_out_arr))
-                weighted_pde = (cfg.physics_weight / resolution) * loss_pde
-                
-                # Compute data loss
-                loss_data = F.mse_loss(k_scaled, out_scaled)
+                # Data loss: predicted permeability vs true permeability
+                loss_data = F.mse_loss(out_scaled, k_scaled)
 
-                # Compute total loss
-                loss = loss_data + weighted_pde
+                # PDE loss: enforce Darcy equation using observed u and predicted k
+                if phy_informer is not None:
+                    residuals = phy_informer.forward(
+                        {
+                            "u": u,
+                            "k": k_pred,
+                        }
+                    )
 
-                # Backward pass and optimizer and learning rate update
+                    pde_out_arr = residuals["diffusion_u"]
+
+                    # Match the spirit of the original: ignore boundary region
+                    pde_core = pde_out_arr[:, :, 2:-2, 2:-2]
+                    loss_pde = torch.mean(torch.abs(pde_core))
+                else:
+                    loss_pde = torch.tensor(0.0, device=device)
+
+                # Total variation regularization on raw model output, like original code
+                loss_tv = total_variance(out_scaled)
+
+                # Original pretraining loss:
+                # pino_loss = 0.2 * loss_f + loss_data + 0.01 * loss_TV
+                weighted_pde = cfg.physics_weight * loss_pde
+                weighted_tv = cfg.tv_weight * loss_tv
+
+                loss = loss_data + weighted_pde + weighted_tv
+
                 loss.backward()
                 optimizer.step()
+
                 log.log_minibatch(
                     {
                         "loss_data": loss_data.detach().item(),
                         "loss_pde": loss_pde.detach().item(),
                         "weighted_pde": weighted_pde.detach().item(),
-                        "physics_weight": cfg.physics_weight / 240,
+                        "loss_tv": loss_tv.detach().item(),
+                        "weighted_tv": weighted_tv.detach().item(),
                         "loss_total": loss.detach().item(),
                     }
                 )
@@ -243,17 +269,14 @@ def main(cfg: DictConfig):
                 epoch,
                 permeability_scale,
                 darcy_scale,
-                phy_informer,
-                cfg.physics_weight,
-                residual_normalizer,
             )
-            log.log_epoch(validation_metrics)
+            log.log_epoch({"Validation error": validation_metrics})
 
         save_checkpoint(
             "./checkpoints",
             models=model,
             optimizer=optimizer,
-            scheduler=cast(Any, scheduler),
+            scheduler=scheduler,
             epoch=epoch,
         )
 

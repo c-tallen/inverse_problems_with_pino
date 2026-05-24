@@ -27,4 +27,4 @@ export LOCAL_RANK=0
 cd /scratch/cwilczewski/physicsnemo/temp
 
 # Run inside Apptainer --config-name config_fno_a100
-apptainer exec --nv /scratch/cwilczewski/physicsnemo/physicsnemo_26.03.sif python inverse_darcy_fno.py
+apptainer exec --nv /scratch/cwilczewski/physicsnemo/physicsnemo_26.03.sif python train_darcy_fno.py 

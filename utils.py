@@ -237,7 +237,8 @@ class CustomDataset(Dataset):
         if device.type == "cuda" and device.index is None:
             device = torch.device("cuda:0")
         self.device = device
-        self.res = res if res is not None else 240 # self.__len__()
+        assert res is not None, "Resolution must be specified for custom dataset"
+        self.res = res if res is not None else self.__len__()
         self.noise = noise
         
     def __len__(self):

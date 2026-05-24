@@ -24,14 +24,14 @@ import torch.nn.functional as F
 from hydra.utils import to_absolute_path
 from physicsnemo.utils.logging import LaunchLogger
 from physicsnemo.distributed import DistributedManager
-from physicsnemo.utils.checkpoint import save_checkpoint
+from physicsnemo.utils.checkpoint import load_checkpoint, save_checkpoint
 from physicsnemo.models.fno import FNO
 from physicsnemo.sym.eq.phy_informer import PhysicsInformer
 from omegaconf import DictConfig
 from torch.utils.data import DataLoader
 
 from diffusion_eq import Diffusion
-from utils import  HDF5MapStyleDataset, CustomDataset
+from utils import CustomDataset
 
 
 def validation_step(model, dataloader, epoch):
@@ -91,7 +91,7 @@ def main(cfg: DictConfig):
     darcy = Diffusion(T="u", time=False, dim=2, D="k", Q=forcing_fn)
 
     dataset = CustomDataset(
-        to_absolute_path("./datasets/Darcy_241/train.hdf5"),
+        to_absolute_path(cfg.data.train_path),
         mappings={
             "permeability": "Kcoeff",
             "darcy": "sol"
@@ -99,7 +99,7 @@ def main(cfg: DictConfig):
         device=device
     )
     validation_dataset = CustomDataset(
-        to_absolute_path("./datasets/Darcy_241/validation.hdf5"),
+        to_absolute_path(cfg.data.validation_path),
         mappings={
             "permeability": "Kcoeff",
             "darcy": "sol"
@@ -139,8 +139,16 @@ def main(cfg: DictConfig):
     )
 
     scheduler = torch.optim.lr_scheduler.ExponentialLR(optimizer, gamma=cfg.gamma)
-
-    for epoch in range(cfg.max_epochs):
+    loaded_epoch = 0
+    print(f"Checkpoint directory: {to_absolute_path('./checkpoints')}")
+    loaded_epoch = load_checkpoint(
+        "./checkpoints",
+        models=model,
+        optimizer=optimizer,
+        scheduler=scheduler,
+        device=device,
+    )
+    for epoch in range(loaded_epoch, loaded_epoch + cfg.max_epochs):
         # wrap epoch in launch logger for console logs
         with LaunchLogger(
             "train",
@@ -148,6 +156,7 @@ def main(cfg: DictConfig):
             num_mini_batch=len(dataloader),
             epoch_alert_freq=10,
         ) as log:
+            print("Dataloader length:", len(dataloader))
             for data in dataloader:
                 optimizer.zero_grad()
                 k = data["permeability"]
@@ -162,33 +171,39 @@ def main(cfg: DictConfig):
                 out_scaled = model(u_scaled)
                 k_pred = out_scaled * 4.49996e00
                 
-                assert out_scaled.shape == k_scaled.shape, f"Output shape {out_scaled.shape} does not match target shape {k_scaled.shape}"
-                residuals = phy_informer.forward(
-                    {
-                        "u": u,
-                        "k": k_pred,
-                    }
-                )
-                pde_out_arr = residuals["diffusion_u"]
-
-                pde_out_arr = F.pad(
-                    pde_out_arr[:, :, 2:-2, 2:-2], [2, 2, 2, 2], "constant", 0
-                )
-                loss_pde = F.l1_loss(pde_out_arr, torch.zeros_like(pde_out_arr))
-                weighted_pde = (cfg.physics_weight / 240) * loss_pde
-                
                 # Compute data loss
                 loss_data = F.mse_loss(k_scaled, out_scaled)
+                
+                assert out_scaled.shape == k_scaled.shape, f"Output shape {out_scaled.shape} does not match target shape {k_scaled.shape}"
+                if cfg.physics_weight > 0.0:
+                    residuals = phy_informer.forward(
+                        {
+                            "u": u,
+                            "k": k_pred,
+                        }
+                    )
+                    pde_out_arr = residuals["diffusion_u"]
 
-                # Compute total loss
-                loss = loss_data + weighted_pde
+                    pde_out_arr = F.pad(
+                        pde_out_arr[:, :, 2:-2, 2:-2], [2, 2, 2, 2], "constant", 0
+                    )
+                    loss_pde = F.l1_loss(pde_out_arr, torch.zeros_like(pde_out_arr))
+                    weighted_pde = (cfg.physics_weight / 240) * loss_pde
+                    
+                    # Compute total loss
+                    loss = loss_data + weighted_pde
+                else:
+                    loss = loss_data
 
                 # Backward pass and optimizer and learning rate update
                 loss.backward()
                 optimizer.step()
-                log.log_minibatch(
-                    {"loss_data": loss_data.detach().item(), "loss_pde": loss_pde.detach().item(), "weighted_pde": weighted_pde.detach().item(), "loss_total": loss.detach().item()}
-                )
+                if cfg.physics_weight > 0.0:
+                    log.log_minibatch(
+                        {"loss_data": loss_data.detach().item(), "loss_pde": loss_pde.detach().item(), "weighted_pde": weighted_pde.detach().item(), "loss_total": loss.detach().item()}
+                    )
+                else:
+                    log.log_minibatch({"loss_data": loss.detach().item()})
             scheduler.step()
             log.log_epoch({"Learning Rate": optimizer.param_groups[0]["lr"]})
             

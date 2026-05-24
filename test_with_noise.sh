@@ -5,9 +5,9 @@
 #SBATCH -c 1
 #SBATCH --gpus-per-task=1
 #SBATCH --mem-per-cpu=8000MB
-#SBATCH --time=00:20:00
-#SBATCH --output=tests/darcy_physics_fno_%j.out
-#SBATCH --error=tests/darcy_physics_fno_%j.err
+#SBATCH --time=01:00:00
+#SBATCH --output=tests/backup_no_physics_%j.out
+#SBATCH --error=tests/backup_no_physics_%j.err
 
 mkdir -p tests
 
@@ -27,4 +27,5 @@ export LOCAL_RANK=0
 cd /scratch/cwilczewski/physicsnemo/temp
 
 # Run inside Apptainer
-apptainer exec --nv /scratch/cwilczewski/physicsnemo/physicsnemo_26.03.sif python test_inverse_darcy.py
+apptainer exec --nv /scratch/cwilczewski/physicsnemo/physicsnemo_26.03.sif python test_neural_operator.py ./neural_operator_outputs/fno/checkpoints/FNO.0.99.mdlus
+apptainer exec --nv /scratch/cwilczewski/physicsnemo/physicsnemo_26.03.sif python test_neural_operator.py ./neural_operator_outputs/pino/checkpoints/FNO.0.99.mdlus
