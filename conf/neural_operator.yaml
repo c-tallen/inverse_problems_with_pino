@@ -18,7 +18,7 @@ hydra:
   job:
     chdir: True
   run:
-    dir: ./neural_operator_outputs/pino2
+    dir: ./neural_operator_outputs/pino
 
 max_epochs: 100
 step_size: 100
@@ -52,7 +52,10 @@ model:
 physics_weight: 0.2
 physics_forcing_term: 1.0
 tv_weight: 0.01
+max_noise: 0.0
 
 scaling:
-  permeability: 1.0
-  darcy: 1.0
+  permeability: 4.49996e00
+  darcy: 3.88433e-03
+
+checkpoint_freq: 10

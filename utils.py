@@ -17,6 +17,8 @@
 import os
 import zipfile
 
+from matplotlib import pyplot as plt
+
 try:
     import gdown
 except:
@@ -266,3 +268,89 @@ class CustomDataset(Dataset):
                 output[key] = tensor.cuda()
 
         return output
+
+
+def darcy_mask1(x: torch.Tensor) -> torch.Tensor:
+    """Map raw network output to permeability range [3, 12]."""
+    return torch.sigmoid(x) * 9.0 + 3.0
+
+def darcy_mask2(x: torch.Tensor) -> torch.Tensor:
+    """Binarized permeability mask used only for visualization in the original code."""
+    x = torch.sigmoid(x)
+    x = torch.where(x > 0.5, torch.ones_like(x), torch.zeros_like(x))
+    return x * 9.0 + 3.0
+
+def total_variance(x: torch.Tensor) -> torch.Tensor:
+    """
+    Total variation regularization for NCHW tensors.
+    x shape: [batch, channels, height, width]
+    """
+    tv_x = torch.mean(torch.abs(x[:, :, :, :-1] - x[:, :, :, 1:]))
+    tv_y = torch.mean(torch.abs(x[:, :, :-1, :] - x[:, :, 1:, :]))
+    return tv_x + tv_y
+
+def relative_l2_loss(pred: torch.Tensor, target: torch.Tensor, eps: float = 1e-12) -> torch.Tensor:
+    """
+    Similar spirit to LpLoss(size_average=True).
+    Computes mean relative L2 error over batch.
+    """
+    batch_size = pred.shape[0]
+    pred_flat = pred.reshape(batch_size, -1)
+    target_flat = target.reshape(batch_size, -1)
+
+    diff_norm = torch.linalg.norm(pred_flat - target_flat, dim=1)
+    target_norm = torch.linalg.norm(target_flat, dim=1)
+
+    return torch.mean(diff_norm / (target_norm + eps))
+
+def validation_step(model, dataloader, epoch, permeability_scale, darcy_scale):
+    """Validation Step"""
+    model.eval()
+
+    with torch.no_grad():
+        data_loss_epoch = 0.0
+        for data in dataloader:
+            k = data["permeability"] 
+            u = data["darcy"]
+            u_scaled = u / darcy_scale
+            out_raw = model(u_scaled)
+            k_pred = darcy_mask1(out_raw)
+            data_loss_epoch += relative_l2_loss(k_pred, k).item()
+
+        # convert data to numpy
+        expected_unscaled = k.detach().cpu().numpy()
+        predvar = k_pred.detach().cpu().numpy()
+
+        # plotting
+        fig, ax = plt.subplots(1, 3, figsize=(25, 5))
+
+        def plot_with_colorbar(i, data, title):
+            d_min = np.min(data[0, 0])
+            d_max = np.max(data[0, 0])
+            im = ax[i].imshow(data[0, 0], vmin=d_min, vmax=d_max)
+            plt.colorbar(im, ax=ax[i])
+            ax[i].set_title(title)
+        
+        plot_with_colorbar(0, expected_unscaled, "True")
+        plot_with_colorbar(1, predvar, "Pred")
+        plot_with_colorbar(2, np.abs(predvar - expected_unscaled), "Difference")
+
+        fig.savefig(f"results_{epoch}.png")
+        plt.close()
+        return data_loss_epoch / len(dataloader)
+    
+    
+def corr_indicator(pred: torch.Tensor, target: torch.Tensor, eps: float = 1e-12) -> torch.Tensor:
+    pred_flat = pred.reshape(pred.shape[0], -1)
+    target_flat = target.reshape(target.shape[0], -1)
+
+    pred_centered = pred_flat - pred_flat.mean(dim=1, keepdim=True)
+    target_centered = target_flat - target_flat.mean(dim=1, keepdim=True)
+
+    numerator = torch.sum(pred_centered * target_centered, dim=1)
+    denominator = (
+        torch.linalg.norm(pred_centered, dim=1)
+        * torch.linalg.norm(target_centered, dim=1)
+    )
+
+    return torch.mean(numerator / (denominator + eps))

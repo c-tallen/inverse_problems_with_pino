@@ -18,7 +18,7 @@ hydra:
   job:
     chdir: True
   run:
-    dir: ./neural_operator_outputs/fno
+    dir: ./neural_operator_outputs/noisy_pino
 
 max_epochs: 100
 step_size: 100
@@ -49,10 +49,10 @@ model:
     num_fno_modes: 12
     padding: 9
 
-physics_weight: 0.0
+physics_weight: 0.2
 physics_forcing_term: 1.0
-tv_weight: 0.0
-max_noise: 0.0
+tv_weight: 0.01
+max_noise: 0.1
 
 scaling:
   permeability: 4.49996e00

@@ -34,9 +34,139 @@ from omegaconf import DictConfig, OmegaConf
 from torch.utils.data import DataLoader
 
 from diffusion_eq import Diffusion
-from utils import CustomDataset, darcy_mask1, validation_step, total_variance
+from utils import CustomDataset, darcy_mask1, relative_l2_loss, validation_step, total_variance
 
-@hydra.main(version_base="1.3", config_path="conf", config_name="neural_operator_noisy.yaml")
+def validation_step_sparse(
+    model,
+    dataloader,
+    epoch,
+    permeability_scale,
+    darcy_scale,
+    sensor_densities,
+):
+    """Sparse validation step for inverse Darcy: [M * u, M] -> k."""
+    model.eval()
+
+    metrics = {}
+
+    with torch.no_grad():
+        for sensor_density in sensor_densities:
+            sensor_density = float(sensor_density)
+
+            data_loss_epoch = 0.0
+
+            # Keep last batch for plotting, same as your original validation_step
+            last_k = None
+            last_k_pred = None
+            last_u = None
+            last_mask = None
+            last_u_masked = None
+
+            for data in dataloader:
+                k = data["permeability"]
+                u = data["darcy"]
+
+                # Create sparse observation mask M
+                mask = make_random_mask(u, sensor_density)
+
+                # Apply mask to pressure field
+                u_masked = mask * u
+
+                # Scale pressure, but not the mask
+                u_masked_scaled = u_masked / darcy_scale
+
+                # Input: [M * u, M]
+                model_input = torch.cat([u_masked_scaled, mask], dim=1)
+
+                out_raw = model(model_input)
+                k_pred = darcy_mask1(out_raw)
+
+                data_loss_epoch += relative_l2_loss(k_pred, k).item()
+
+                last_k = k
+                last_k_pred = k_pred
+                last_u = u
+                last_mask = mask
+                last_u_masked = u_masked
+
+            avg_relative_l2 = data_loss_epoch / len(dataloader)
+
+            metrics[f"rel_l2_p_{sensor_density}"] = avg_relative_l2
+
+            # Convert last batch to numpy for plotting
+            expected_unscaled = last_k.detach().cpu().numpy()
+            predvar = last_k_pred.detach().cpu().numpy()
+            u_np = last_u.detach().cpu().numpy()
+            mask_np = last_mask.detach().cpu().numpy()
+            u_masked_np = last_u_masked.detach().cpu().numpy()
+
+            # Plot similar to your original validation_step, but with sparse input info
+            fig, ax = plt.subplots(1, 5, figsize=(35, 5))
+
+            def plot_with_colorbar(i, data, title):
+                d_min = np.min(data[0, 0])
+                d_max = np.max(data[0, 0])
+                im = ax[i].imshow(data[0, 0], vmin=d_min, vmax=d_max)
+                plt.colorbar(im, ax=ax[i])
+                ax[i].set_title(title)
+                ax[i].set_xticks([])
+                ax[i].set_yticks([])
+
+            plot_with_colorbar(0, u_np, "Full pressure $u$")
+            plot_with_colorbar(1, mask_np, f"Mask $M$, p={sensor_density}")
+            plot_with_colorbar(2, u_masked_np, "$M \\odot u$")
+            plot_with_colorbar(3, expected_unscaled, "True permeability")
+            plot_with_colorbar(4, predvar, "Predicted permeability")
+
+            fig.savefig(f"results_sparse_p_{sensor_density}_epoch_{epoch}.png")
+            plt.close()
+
+    model.train()
+    return metrics
+
+def make_random_mask(
+    u: torch.Tensor,
+    sensor_density: float,
+) -> torch.Tensor:
+    """
+    Create a random binary observation mask M with approximately
+    sensor_density fraction of observed points.
+
+    Args:
+        u: Tensor of shape (B, C, H, W), normally pressure field.
+        sensor_density: Fraction of observed grid points, e.g. 1.0, 0.5, 0.25.
+
+    Returns:
+        mask: Tensor of shape (B, 1, H, W), with values 0 or 1.
+    """
+    assert 0.0 < sensor_density <= 1.0, (
+        f"sensor_density must be in (0, 1], got {sensor_density}"
+    )
+
+    batch_size, _, height, width = u.shape
+
+    if sensor_density == 1.0:
+        return torch.ones(
+            batch_size,
+            1,
+            height,
+            width,
+            device=u.device,
+            dtype=u.dtype,
+        )
+
+    mask = torch.rand(
+        batch_size,
+        1,
+        height,
+        width,
+        device=u.device,
+        dtype=u.dtype,
+    ) < sensor_density
+
+    return mask.to(dtype=u.dtype)
+
+@hydra.main(version_base="1.3", config_path="conf", config_name="sparse_pino.yaml")
 def main(cfg: DictConfig):
     """Main function for the Darcy physics-informed FNO."""
     # CUDA support
@@ -138,27 +268,50 @@ def main(cfg: DictConfig):
             "train",
             epoch=epoch,
             num_mini_batch=len(dataloader),
-            epoch_alert_freq=len(dataloader) // 20,
+            epoch_alert_freq=max(1, len(dataloader) // 20),
         ) as log:
             for data in dataloader:
                 optimizer.zero_grad()
 
                 k = data["permeability"]
                 u = data["darcy"]
-                
+
                 max_noise = cfg.max_noise
+
                 if max_noise > 0.0:
                     u_std = u.std(dim=(-2, -1), keepdim=True)
                     alpha = torch.rand(u.shape[0], 1, 1, 1, device=u.device) * max_noise
                     noise = torch.randn_like(u) * u_std * alpha
-                    u_noisy = u + noise
-                    u_input = u_noisy / darcy_scale
+                    u_observed = u + noise
                 else:
-                    u_input = u / darcy_scale
+                    u_observed = u
 
-                # Inverse model: u -> k
+                # Randomly sample one sensor density for this batch
+                sensor_densities = list(cfg.sensor_densities)
+                density_idx = torch.randint(
+                    low=0,
+                    high=len(sensor_densities),
+                    size=(1,),
+                    device=u.device,
+                ).item()
+                sensor_density = float(sensor_densities[density_idx])
+
+                # Create sparse sensor mask M
+                mask = make_random_mask(u_observed, sensor_density)
+
+                # Sparse observed pressure field M * u
+                u_masked = mask * u_observed
+
+                # Scale pressure values, not the mask
+                u_masked_scaled = u_masked / darcy_scale
+
+                # Model input: [M * u, M]
+                u_input = torch.cat([u_masked_scaled, mask], dim=1)
+
+                # Inverse model: [M * u, M] -> k
                 out_raw = model(u_input)
-                # Original code constrains predicted permeability to [3, 12]
+
+                # Constrain predicted permeability to [3, 12]
                 k_pred = darcy_mask1(out_raw)
 
                 assert k_pred.shape == k.shape, (
@@ -166,9 +319,9 @@ def main(cfg: DictConfig):
                 )
 
                 # Data loss: predicted permeability vs true permeability
-                loss_data = F.mse_loss(k_pred, k) # TODO: This can be L2 or relative L2
+                loss_data = F.mse_loss(k_pred, k)
 
-                # PDE loss: enforce Darcy equation using observed u and predicted k
+                # PDE loss: enforce Darcy equation using full simulated u and predicted k
                 if phy_informer is not None:
                     residuals = phy_informer.forward(
                         {
@@ -179,26 +332,25 @@ def main(cfg: DictConfig):
 
                     pde_out_arr = residuals["diffusion_u"]
 
-                    # Match the spirit of the original: ignore boundary region
                     pde_core = pde_out_arr[:, :, 2:-2, 2:-2]
                     loss_pde = torch.mean(torch.abs(pde_core))
-                    # Total variation regularization on raw model output, like original code
+
                     loss_tv = total_variance(k_pred)
-                    # Original pretraining loss:
-                    # pino_loss = 0.2 * loss_f + loss_data + 0.01 * loss_TV
+
                     weighted_pde = cfg.physics_weight * loss_pde
                     weighted_tv = cfg.tv_weight * loss_tv
+
                     loss = loss_data + weighted_pde + weighted_tv
                 else:
                     loss_tv = torch.tensor(0.0, device=device)
                     loss_pde = torch.tensor(0.0, device=device)
                     weighted_pde = torch.tensor(0.0, device=device)
                     weighted_tv = torch.tensor(0.0, device=device)
+
                     loss = loss_data
 
                 loss.backward()
                 optimizer.step()
-
                 log.log_minibatch(
                     {
                         "loss_data": loss_data.detach().item(),
@@ -207,20 +359,22 @@ def main(cfg: DictConfig):
                         "loss_tv": loss_tv.detach().item(),
                         "weighted_tv": weighted_tv.detach().item(),
                         "loss_total": loss.detach().item(),
+                        "sensor_density": sensor_density,
                     }
                 )
             scheduler.step()
             log.log_epoch({"Learning Rate": optimizer.param_groups[0]["lr"]})
             
         with LaunchLogger("valid", epoch=epoch) as log:
-            validation_metrics = validation_step(
+            validation_metrics = validation_step_sparse(
                 model,
                 validation_dataloader,
                 epoch,
                 permeability_scale,
                 darcy_scale,
+                cfg.sensor_densities,
             )
-            log.log_epoch({"Validation error": validation_metrics})
+            log.log_epoch(validation_metrics)
         if epoch % cfg.checkpoint_freq == 0 or epoch == cfg.max_epochs - 1:
             save_checkpoint(
                 str(checkpoint_dir),
