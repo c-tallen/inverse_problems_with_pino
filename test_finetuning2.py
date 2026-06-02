@@ -332,7 +332,7 @@ if __name__ == "__main__":
     timestamp = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
 
     output_dir = (
-        pathlib.Path("./test_results_original_neural_operator_method")
+        pathlib.Path("./test_finetuned_results")
         / model_name
         / timestamp
     )
