@@ -354,3 +354,66 @@ def corr_indicator(pred: torch.Tensor, target: torch.Tensor, eps: float = 1e-12)
     )
 
     return torch.mean(numerator / (denominator + eps))
+
+
+def make_random_mask(
+    u: torch.Tensor,
+    sensor_density: float,
+) -> torch.Tensor:
+    """
+    Create a random binary observation mask M with approximately
+    sensor_density fraction of observed points.
+
+    Args:
+        u: Tensor of shape (B, C, H, W), normally pressure field.
+        sensor_density: Fraction of observed grid points, e.g. 1.0, 0.5, 0.25.
+
+    Returns:
+        mask: Tensor of shape (B, 1, H, W), with values 0 or 1.
+    """
+    assert 0.0 < sensor_density <= 1.0, (
+        f"sensor_density must be in (0, 1], got {sensor_density}"
+    )
+
+    batch_size, _, height, width = u.shape
+
+    if sensor_density == 1.0:
+        return torch.ones(
+            batch_size,
+            1,
+            height,
+            width,
+            device=u.device,
+            dtype=u.dtype,
+        )
+
+    mask = torch.rand(
+        batch_size,
+        1,
+        height,
+        width,
+        device=u.device,
+        dtype=u.dtype,
+    ) < sensor_density
+
+    return mask.to(dtype=u.dtype)
+
+def make_sparse_input(
+    u: torch.Tensor,
+    sensor_density: float,
+    darcy_scale: float,
+) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+    """
+    Create sparse model input [M * u, M].
+
+    Returns:
+        model_input: Tensor of shape (B, 2, H, W)
+        mask: Tensor of shape (B, 1, H, W)
+        u_masked: Tensor of shape (B, 1, H, W)
+    """
+    mask = make_random_mask(u, sensor_density)
+    u_masked = mask * u
+    u_masked_scaled = u_masked / darcy_scale
+    model_input = torch.cat([u_masked_scaled, mask], dim=1)
+
+    return model_input, mask, u_masked
