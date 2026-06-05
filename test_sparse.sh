@@ -27,8 +27,5 @@ export LOCAL_RANK=0
 cd /scratch/cwilczewski/physicsnemo/temp
 
 # Run inside Apptainer
-apptainer exec --nv /scratch/cwilczewski/physicsnemo/physicsnemo_26.03.sif python test_inverse_darcy.py ./neural_operator_outputs/pino --dataset ./datasets/PDEBench/2D_DarcyFlow_beta1.0_Train.hdf5 \
-    --permeability_mapping "nu" \
-    --darcy_mapping "tensor"
-# apptainer exec --nv /scratch/cwilczewski/physicsnemo/physicsnemo_26.03.sif python test_inverse_darcy.py ./neural_operator_outputs/noisy_fno
-# apptainer exec --nv /scratch/cwilczewski/physicsnemo/physicsnemo_26.03.sif python test_inverse_darcy.py ./neural_operator_outputs/noisy_pino
+apptainer exec --nv /scratch/cwilczewski/physicsnemo/physicsnemo_26.03.sif python test_sparse_darcy.py ./neural_operator_outputs/sparse/pino
+# apptainer exec --nv /scratch/cwilczewski/physicsnemo/physicsnemo_26.03.sif python test_sparse_darcy.py ./neural_operator_outputs/sparse/fno

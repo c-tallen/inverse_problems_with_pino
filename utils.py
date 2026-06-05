@@ -228,7 +228,7 @@ class CustomDataset(Dataset):
         with h5py.File(file_path, "r") as f:
             for k in f.keys():
                 x = np.array(f[k])
-                print(f"selected key: {k}, mean: {x.mean():.5e}, std: {x.std():.5e}")
+                print(f"selected key: {k}, mean: {x.mean():.5e}, std: {x.std():.5e}, max: {x.max():.5e}, min: {x.min():.5e}")
                 if k in mappings.values():
                     self.keys.append(k)
 
@@ -270,15 +270,9 @@ class CustomDataset(Dataset):
         return output
 
 
-def darcy_mask1(x: torch.Tensor) -> torch.Tensor:
-    """Map raw network output to permeability range [3, 12]."""
-    return torch.sigmoid(x) * 9.0 + 3.0
-
-def darcy_mask2(x: torch.Tensor) -> torch.Tensor:
-    """Binarized permeability mask used only for visualization in the original code."""
-    x = torch.sigmoid(x)
-    x = torch.where(x > 0.5, torch.ones_like(x), torch.zeros_like(x))
-    return x * 9.0 + 3.0
+def darcy_mask1(x: torch.Tensor, permeability_min=3.0, permeability_max=12.0) -> torch.Tensor:
+    """Map raw network output to permeability range [permeability_min, permeability_max]."""
+    return torch.sigmoid(x) * (permeability_max - permeability_min) + permeability_min
 
 def total_variance(x: torch.Tensor) -> torch.Tensor:
     """
@@ -303,7 +297,7 @@ def relative_l2_loss(pred: torch.Tensor, target: torch.Tensor, eps: float = 1e-1
 
     return torch.mean(diff_norm / (target_norm + eps))
 
-def validation_step(model, dataloader, epoch, permeability_scale, darcy_scale):
+def validation_step(model, dataloader, epoch, darcy_scale, permeability_min=3.0, permeability_max=12.0):
     """Validation Step"""
     model.eval()
 
@@ -314,7 +308,7 @@ def validation_step(model, dataloader, epoch, permeability_scale, darcy_scale):
             u = data["darcy"]
             u_scaled = u / darcy_scale
             out_raw = model(u_scaled)
-            k_pred = darcy_mask1(out_raw)
+            k_pred = darcy_mask1(out_raw, permeability_min=permeability_min, permeability_max=permeability_max)
             data_loss_epoch += relative_l2_loss(k_pred, k).item()
 
         # convert data to numpy

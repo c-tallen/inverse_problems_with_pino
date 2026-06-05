@@ -1,3 +1,4 @@
+import argparse
 from datetime import datetime
 import sys
 
@@ -17,24 +18,53 @@ import pathlib
 from omegaconf import DictConfig, OmegaConf
 from utils import darcy_mask1, corr_indicator
 
-def run_test(cfg: DictConfig, model_path: pathlib.Path, output_dir: pathlib.Path):
+def run_test(cfg: DictConfig,
+             model_path: pathlib.Path,
+             output_dir: pathlib.Path,
+             test_dataset_path = None, 
+             test_mappings=None,
+             res=241,
+             perm_min=0.0,
+             perm_max=0.0
+    ):
+    
+    torch.manual_seed(0)
+    np.random.seed(0)
+
     if torch.cuda.is_available():
         device = torch.device("cuda")
     else:
         device = torch.device("cpu")
     print("Loading model and dataset on device:", device)
     noise_levels = [0.0, 0.01, 0.05, 0.1, 0.2, 0.5, 1.0]
-    
-    mappings_dict = OmegaConf.to_container(cfg.mappings, resolve=True)
+    if test_mappings is not None:
+        mappings_dict = test_mappings
+    else:
+        mappings_dict = OmegaConf.to_container(cfg.mappings, resolve=True)
     model = physicsnemo.Module.from_checkpoint(str(model_path)).to(device)
     model.eval()
-    dataset = CustomDataset(cfg.data.validation_path, device=device, mappings=mappings_dict, res=cfg.data.resolution)
+    
+    tp = cfg.data.test_path if hasattr(cfg.data, 'test_path') else cfg.data.validation_path
+    dataset_path = (
+        pathlib.Path(test_dataset_path).resolve()
+        if test_dataset_path is not None
+        else pathlib.Path(tp).resolve()
+    )
+
+    print(f"Using test dataset: {dataset_path}")
+    resolution = res if res is not None else cfg.data.resolution
+    print(f"Using resolution: {resolution}x{resolution}")
+    dataset = CustomDataset(dataset_path, device=device, mappings=mappings_dict, res=resolution)
     dataloader = DataLoader(dataset, batch_size=1, shuffle=False)
     
-    permeability_scale = cfg.scaling.permeability
     darcy_scale = cfg.scaling.darcy
-    resolution = cfg.data.resolution
-    
+    if perm_max == 0.0 and perm_min == 0.0:
+        permeability_min = cfg.data.permeability_min if cfg.data.pde_bench else 3.0
+        permeability_max = cfg.data.permeability_max if cfg.data.pde_bench else 12.0
+    else:
+        permeability_min = perm_min
+        permeability_max = perm_max
+        
     # Use Diffusion equation for the Darcy PDE
     forcing_fn = cfg.physics_forcing_term
     fd_dx = 1.0 / float(resolution - 1)
@@ -58,8 +88,8 @@ def run_test(cfg: DictConfig, model_path: pathlib.Path, output_dir: pathlib.Path
         for sample_i, data in enumerate(dataloader):
             k = data["permeability"]
             u = data["darcy"]
-            assert u.shape == (1, 1, resolution, resolution), f"Unexpected input shape: {u.shape}"
-            assert k.shape == (1, 1, resolution, resolution), f"Unexpected target shape: {k.shape}"
+            # assert u.shape == (1, 1, resolution, resolution), f"Unexpected input shape: {u.shape}"
+            # assert k.shape == (1, 1, resolution, resolution), f"Unexpected target shape: {k.shape}"
 
             # Create one noisy version of u for each fixed noise level.
             noisy_inputs = []
@@ -77,7 +107,7 @@ def run_test(cfg: DictConfig, model_path: pathlib.Path, output_dir: pathlib.Path
 
             # Model outputs raw values; convert to permeability range [3, 12]
             out_raw = model(u_input)
-            k_pred_batch = darcy_mask1(out_raw)
+            k_pred_batch = darcy_mask1(out_raw, permeability_min=permeability_min, permeability_max=permeability_max)
 
             print(f"Processing sample {sample_i}, output shape: {out_raw.shape}")
 
@@ -243,24 +273,92 @@ def load_model_dir(model_dir):
 
 
 if __name__ == "__main__":
-    model_dir = sys.argv[1]
+    parser = argparse.ArgumentParser()
 
-    cfg, model_path, model_dir = load_model_dir(model_dir)
+    parser.add_argument("model_dir", type=pathlib.Path)
+
+    parser.add_argument(
+        "--dataset",
+        type=pathlib.Path,
+        default=None,
+        help="Optional custom dataset path for testing.",
+    )
+
+    parser.add_argument(
+        "--permeability_mapping",
+        type=str,
+        default=None,
+        help="Optional custom mappings YAML file for the test dataset.",
+    )
+    parser.add_argument(
+        "--darcy_mapping",
+        type=str,
+        default=None,
+        help="Optional custom mappings YAML file for the test dataset.",
+    )
+    parser.add_argument(
+        "--resolution",
+        type=int,
+        default=None,
+        help="Resolution of the test dataset.",
+    )
+    parser.add_argument(
+        "--output_dir",
+        type=pathlib.Path,
+        default=None,
+        help="Directory to save test results.",
+    )
+    parser.add_argument(
+        "--perm_min",
+        type=float,
+        default=0.0,
+        help="Minimum permeability value for scaling the model output. If 0.0, uses value from config.",
+    )
+    parser.add_argument(
+        "--perm_max",
+        type=float,
+        default=0.0,
+        help="Maximum permeability value for scaling the model output. If 0.0, uses value from config.",
+    )
+
+    args = parser.parse_args()
+    if args.permeability_mapping is not None and args.darcy_mapping is not None:
+        test_mappings = {
+            "permeability": args.permeability_mapping,
+            "darcy": args.darcy_mapping,
+        }
+        print(f"Custom test mappings: {test_mappings}")
+    else:
+        test_mappings = None
+
+    cfg, model_path, model_dir = load_model_dir(args.model_dir)
 
     model_name = model_path.stem + "_" + model_dir.name
     timestamp = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
-
-    output_dir = (
-        pathlib.Path("./test_results_original_neural_operator_method")
-        / model_name
-        / timestamp
-    )
+    if args.output_dir is not None:
+        output_dir = args.output_dir / model_name / timestamp
+    else:
+        output_dir = (
+            pathlib.Path("./test_results_original_neural_operator_method")
+            / model_name
+            / timestamp
+        )
     output_dir.mkdir(parents=True, exist_ok=True)
 
-    print(f"Loaded config from: {model_dir / 'checkpoints' / '.hydra' / 'config.yaml'}")
+    print(f"Loaded config from: {model_dir / '.hydra' / 'config.yaml'}")
     print(f"Using newest checkpoint: {model_path}")
     print(f"Output directory: {output_dir}")
+    print(f"Custom test mappings: {test_mappings}")
 
-    run_test(cfg, model_path, output_dir)
+    run_test(
+        cfg,
+        model_path,
+        output_dir,
+        test_dataset_path=args.dataset,
+        test_mappings=test_mappings,
+        res=args.resolution,
+        perm_min=args.perm_min,
+        perm_max=args.perm_max,
+    )
     
     

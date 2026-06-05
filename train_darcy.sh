@@ -5,9 +5,10 @@
 #SBATCH -c 1
 #SBATCH --gpus-per-task=1
 #SBATCH --mem-per-cpu=8000MB
-#SBATCH --time=02:00:00
+#SBATCH --time=04:00:00
 #SBATCH --output=logs/darcy_physics_fno_%j.out
 #SBATCH --error=logs/darcy_physics_fno_%j.err
+set -euo pipefail
 
 mkdir -p logs
 
@@ -27,4 +28,13 @@ export LOCAL_RANK=0
 cd /scratch/cwilczewski/physicsnemo/temp
 
 # Run inside Apptainer --config-name config_fno_a100
-apptainer exec --nv /scratch/cwilczewski/physicsnemo/physicsnemo_26.03.sif python train_darcy_fno.py 
+apptainer exec --nv /scratch/cwilczewski/physicsnemo/physicsnemo_26.03.sif python inverse_darcy_fno.py --config-name neural_operator_no_physics seed=1
+# apptainer exec --nv /scratch/cwilczewski/physicsnemo/physicsnemo_26.03.sif python inverse_darcy_fno.py --config-name neural_operator_noisy_pino seed=0
+# apptainer exec --nv /scratch/cwilczewski/physicsnemo/physicsnemo_26.03.sif python inverse_darcy_fno.py --config-name neural_operator_noisy seed=0
+# apptainer exec --nv /scratch/cwilczewski/physicsnemo/physicsnemo_26.03.sif python inverse_darcy_fno.py --config-name neural_operator_no_scaling seed=0
+
+# Run tests
+apptainer exec --nv /scratch/cwilczewski/physicsnemo/physicsnemo_26.03.sif python test_inverse_darcy.py ./inverse_darcy_training/fno_seed_1
+# apptainer exec --nv /scratch/cwilczewski/physicsnemo/physicsnemo_26.03.sif python test_inverse_darcy.py ./neural_operator_outputs/pino_no_scaling
+# apptainer exec --nv /scratch/cwilczewski/physicsnemo/physicsnemo_26.03.sif python test_inverse_darcy.py ./neural_operator_outputs/noisy_pino_no_scaling
+# apptainer exec --nv /scratch/cwilczewski/physicsnemo/physicsnemo_26.03.sif python test_inverse_darcy.py ./neural_operator_outputs/noisy_fno_no_scaling

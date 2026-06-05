@@ -1,11 +1,11 @@
 #!/bin/bash
 #SBATCH --job-name=darcy_fno
-#SBATCH --partition=gpu-a100-small
+#SBATCH --partition=gpu-a100
 #SBATCH -n 1
 #SBATCH -c 1
 #SBATCH --gpus-per-task=1
-#SBATCH --mem-per-cpu=8000MB
-#SBATCH --time=04:00:00
+#SBATCH --mem-per-cpu=5333MB
+#SBATCH --time=01:00:00
 #SBATCH --output=logs/darcy_physics_fno_%j.out
 #SBATCH --error=logs/darcy_physics_fno_%j.err
 set -euo pipefail
@@ -28,7 +28,7 @@ export LOCAL_RANK=0
 cd /scratch/cwilczewski/physicsnemo/temp
 
 # Run inside Apptainer --config-name config_fno_a100
-# apptainer exec --nv /scratch/cwilczewski/physicsnemo/physicsnemo_26.03.sif python inverse_darcy_fno.py --config-name neural_operator_no_physics
-# apptainer exec --nv /scratch/cwilczewski/physicsnemo/physicsnemo_26.03.sif python inverse_darcy_fno.py --config-name neural_operator_noisy_pino
-# apptainer exec --nv /scratch/cwilczewski/physicsnemo/physicsnemo_26.03.sif python inverse_darcy_fno.py --config-name neural_operator_noisy
-apptainer exec --nv /scratch/cwilczewski/physicsnemo/physicsnemo_26.03.sif python inverse_darcy_sparse.py --config-name sparse_fno
+apptainer exec --nv /scratch/cwilczewski/physicsnemo/physicsnemo_26.03.sif python physics_only.py --config-name physics_only
+
+# Run tests
+# apptainer exec --nv /scratch/cwilczewski/physicsnemo/physicsnemo_26.03.sif python test_inverse_darcy.py ./inverse_darcy_training/physics_only

@@ -34,7 +34,19 @@ from omegaconf import DictConfig, OmegaConf
 from torch.utils.data import DataLoader
 
 from diffusion_eq import Diffusion
-from utils import CustomDataset, darcy_mask1, validation_step, total_variance
+from utils import CustomDataset, darcy_mask1, relative_l2_loss, validation_step, total_variance
+
+def set_seed(seed: int):
+    print(f"Setting random seed to: {seed}")
+    torch.manual_seed(seed)
+    np.random.seed(seed)
+
+    if torch.cuda.is_available():
+        torch.cuda.manual_seed_all(seed)
+
+    # Optional, makes things more deterministic but may slow training
+    torch.backends.cudnn.benchmark = False
+    torch.backends.cudnn.deterministic = True
 
 @hydra.main(version_base="1.3", config_path="conf", config_name="neural_operator_noisy.yaml")
 def main(cfg: DictConfig):
@@ -44,11 +56,13 @@ def main(cfg: DictConfig):
         device = torch.device("cuda")
     else:
         device = torch.device("cpu")
+    set_seed(cfg.seed)
 
     LaunchLogger.initialize()
     DistributedManager.initialize()
 
-    permeability_scale = cfg.scaling.permeability
+    permeability_min = cfg.scaling.permeability_min if cfg.data.pde_bench else 3.0
+    permeability_max = cfg.scaling.permeability_max if cfg.data.pde_bench else 12.0
     darcy_scale = cfg.scaling.darcy
     resolution = cfg.data.resolution
     mappings_dict = OmegaConf.to_container(cfg.mappings, resolve=True)
@@ -69,7 +83,9 @@ def main(cfg: DictConfig):
         device=device,
         res=resolution,
     )
-
+    print(f"Training dataset size: {len(dataset)}")
+    print(f"Validation dataset size: {len(validation_dataset)}")
+    print("Using the batch size specified in the config:", cfg.batch_size)
     dataloader = DataLoader(dataset, batch_size=cfg.batch_size, shuffle=True)
 
     validation_dataloader = DataLoader(validation_dataset, batch_size=cfg.validation_batch_size, shuffle=False)
@@ -159,7 +175,7 @@ def main(cfg: DictConfig):
                 # Inverse model: u -> k
                 out_raw = model(u_input)
                 # Original code constrains predicted permeability to [3, 12]
-                k_pred = darcy_mask1(out_raw)
+                k_pred = darcy_mask1(out_raw, permeability_min=permeability_min, permeability_max=permeability_max)
 
                 assert k_pred.shape == k.shape, (
                     f"Output shape {k_pred.shape} does not match target shape {k.shape}"
@@ -188,7 +204,10 @@ def main(cfg: DictConfig):
                     # pino_loss = 0.2 * loss_f + loss_data + 0.01 * loss_TV
                     weighted_pde = cfg.physics_weight * loss_pde
                     weighted_tv = cfg.tv_weight * loss_tv
-                    loss = loss_data + weighted_pde + weighted_tv
+                    if cfg.physics_only:
+                        loss = weighted_pde + weighted_tv
+                    else:
+                        loss = loss_data + weighted_pde + weighted_tv
                 else:
                     loss_tv = torch.tensor(0.0, device=device)
                     loss_pde = torch.tensor(0.0, device=device)
@@ -217,8 +236,9 @@ def main(cfg: DictConfig):
                 model,
                 validation_dataloader,
                 epoch,
-                permeability_scale,
                 darcy_scale,
+                permeability_min=permeability_min,
+                permeability_max=permeability_max
             )
             log.log_epoch({"Validation error": validation_metrics})
         if epoch % cfg.checkpoint_freq == 0 or epoch == cfg.max_epochs - 1:

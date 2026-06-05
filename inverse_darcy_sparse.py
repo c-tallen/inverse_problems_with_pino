@@ -34,7 +34,7 @@ from omegaconf import DictConfig, OmegaConf
 from torch.utils.data import DataLoader
 
 from diffusion_eq import Diffusion
-from utils import CustomDataset, darcy_mask1, relative_l2_loss, validation_step, total_variance
+from utils import CustomDataset, darcy_mask1, make_sparse_input, relative_l2_loss, total_variance, make_random_mask
 
 def validation_step_sparse(
     model,
@@ -124,47 +124,6 @@ def validation_step_sparse(
     model.train()
     return metrics
 
-def make_random_mask(
-    u: torch.Tensor,
-    sensor_density: float,
-) -> torch.Tensor:
-    """
-    Create a random binary observation mask M with approximately
-    sensor_density fraction of observed points.
-
-    Args:
-        u: Tensor of shape (B, C, H, W), normally pressure field.
-        sensor_density: Fraction of observed grid points, e.g. 1.0, 0.5, 0.25.
-
-    Returns:
-        mask: Tensor of shape (B, 1, H, W), with values 0 or 1.
-    """
-    assert 0.0 < sensor_density <= 1.0, (
-        f"sensor_density must be in (0, 1], got {sensor_density}"
-    )
-
-    batch_size, _, height, width = u.shape
-
-    if sensor_density == 1.0:
-        return torch.ones(
-            batch_size,
-            1,
-            height,
-            width,
-            device=u.device,
-            dtype=u.dtype,
-        )
-
-    mask = torch.rand(
-        batch_size,
-        1,
-        height,
-        width,
-        device=u.device,
-        dtype=u.dtype,
-    ) < sensor_density
-
-    return mask.to(dtype=u.dtype)
 
 @hydra.main(version_base="1.3", config_path="conf", config_name="sparse_pino.yaml")
 def main(cfg: DictConfig):
@@ -297,19 +256,10 @@ def main(cfg: DictConfig):
                 sensor_density = float(sensor_densities[density_idx])
 
                 # Create sparse sensor mask M
-                mask = make_random_mask(u_observed, sensor_density)
-
-                # Sparse observed pressure field M * u
-                u_masked = mask * u_observed
-
-                # Scale pressure values, not the mask
-                u_masked_scaled = u_masked / darcy_scale
-
-                # Model input: [M * u, M]
-                u_input = torch.cat([u_masked_scaled, mask], dim=1)
+                model_input, mask, u_masked = make_sparse_input(u_observed, sensor_density, darcy_scale)
 
                 # Inverse model: [M * u, M] -> k
-                out_raw = model(u_input)
+                out_raw = model(model_input)
 
                 # Constrain predicted permeability to [3, 12]
                 k_pred = darcy_mask1(out_raw)
