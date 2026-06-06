@@ -18,7 +18,7 @@ hydra:
   job:
     chdir: True
   run:
-    dir: ./pde_bench_outputs/pino_batch_size_8_seed_${seed}
+    dir: ./pde_bench_outputs/pino_seed_${seed}
 
 max_epochs: 100
 step_size: 100

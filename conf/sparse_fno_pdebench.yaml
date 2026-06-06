@@ -18,22 +18,23 @@ hydra:
   job:
     chdir: True
   run:
-    dir: ./neural_operator_outputs/sparse/fno_${now:%Y-%m-%d_%H-%M-%S}
+    dir: ./neural_operator_outputs/sparse/fno_pdebench_${now:%Y-%m-%d_%H-%M-%S}
 
 max_epochs: 200
 step_size: 200
 gamma: 0.5
 start_lr: 0.001
 
-batch_size: 1
+batch_size: 16
 validation_batch_size: 1
 seed: 0
 
 data:
-  train_path: ./datasets/Darcy_241/piececonst_r241_N1024_smooth1.hdf5
-  validation_path: ./datasets/Darcy_241/piececonst_r241_N1024_smooth2.hdf5
-  resolution: 241
-  pde_bench: False
+  train_path: ./datasets/PDEBench/2D_DarcyFlow_beta1.0_train_split.hdf5
+  validation_path: ./datasets/PDEBench/2D_DarcyFlow_beta1.0_val_split.hdf5
+  test_path: ./datasets/PDEBench/2D_DarcyFlow_beta1.0_test_split.hdf5
+  resolution: 128
+  pde_bench: True
 
 mappings:
   permeability: "coeff"
@@ -55,10 +56,11 @@ physics_weight: 0.0
 physics_forcing_term: 1.0
 tv_weight: 0.0
 max_noise: 0.0
-sensor_densities: [1.0, 0.5, 0.25, 0.10, 0.05, 0.01, 0.005, 0.001]
+sensor_densities: [1.0, 0.5, 0.25, 0.10, 0.05, 0.01, 0.005]
 
 scaling:
-  permeability: 4.49996e00
-  darcy: 3.88433e-03
+  permeability_min: 0.1
+  permeability_max: 1.0
+  darcy: 1.40925e-01
 
 checkpoint_freq: 10
