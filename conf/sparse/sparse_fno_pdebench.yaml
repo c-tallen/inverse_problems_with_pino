@@ -18,17 +18,16 @@ hydra:
   job:
     chdir: True
   run:
-    dir: ./pde_bench_outputs/noisy_data_only_seed_${seed}
+    dir: ./neural_operator_outputs/sparse/fno_pdebench
 
-max_epochs: 50
-step_size: 100
-gamma: 0.75
+max_epochs: 250
+step_size: 200
+gamma: 0.5
 start_lr: 0.001
-seed: 0
 
-batch_size: 64
-validation_batch_size: 8
-physics_only: False
+batch_size: 16
+validation_batch_size: 1
+seed: 0
 
 data:
   train_path: ./datasets/PDEBench/2D_DarcyFlow_beta1.0_train_split.hdf5
@@ -43,7 +42,7 @@ mappings:
 
 model:
   fno:
-    in_channels: 1
+    in_channels: 2
     out_channels: 1
     decoder_layers: 1
     decoder_layer_size: 128
@@ -56,11 +55,12 @@ model:
 physics_weight: 0.0
 physics_forcing_term: 1.0
 tv_weight: 0.0
-max_noise: 0.2
+max_noise: 0.0
+sensor_densities: [1.0, 0.5, 0.25, 0.10, 0.05, 0.01, 0.005]
 
 scaling:
-  darcy: 1.40925e-01
   permeability_min: 0.1
   permeability_max: 1.0
+  darcy: 1.40925e-01
 
-checkpoint_freq: 2
+checkpoint_freq: 1

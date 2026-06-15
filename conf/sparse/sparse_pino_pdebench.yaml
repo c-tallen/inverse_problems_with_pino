@@ -18,9 +18,9 @@ hydra:
   job:
     chdir: True
   run:
-    dir: ./neural_operator_outputs/sparse/pino_pdebench_${now:%Y-%m-%d_%H-%M-%S}
+    dir: ./neural_operator_outputs/sparse/pino_pdebench
 
-max_epochs: 200
+max_epochs: 250
 step_size: 200
 gamma: 0.5
 start_lr: 0.001
@@ -37,8 +37,8 @@ data:
   pde_bench: True
 
 mappings:
-  permeability: "coeff"
-  darcy: "sol"
+  permeability: "nu"
+  darcy: "tensor"
 
 model:
   fno:
@@ -63,4 +63,4 @@ scaling:
   permeability_max: 1.0
   darcy: 1.40925e-01
 
-checkpoint_freq: 10
+checkpoint_freq: 1

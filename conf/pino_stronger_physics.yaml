@@ -18,16 +18,17 @@ hydra:
   job:
     chdir: True
   run:
-    dir: ./neural_operator_outputs/sparse/fno_${now:%Y-%m-%d_%H-%M-%S}
+    dir: ./inverse_darcy_training/pino_stronger_physics_seed_${seed}
 
-max_epochs: 200
-step_size: 200
+max_epochs: 250
+step_size: 100
 gamma: 0.5
 start_lr: 0.001
-
-batch_size: 1
-validation_batch_size: 1
 seed: 0
+
+batch_size: 4
+validation_batch_size: 1
+physics_only: False
 
 data:
   train_path: ./datasets/Darcy_241/piececonst_r241_N1024_smooth1.hdf5
@@ -41,7 +42,7 @@ mappings:
 
 model:
   fno:
-    in_channels: 2
+    in_channels: 1
     out_channels: 1
     decoder_layers: 1
     decoder_layer_size: 128
@@ -51,14 +52,13 @@ model:
     num_fno_modes: 12
     padding: 9
 
-physics_weight: 0.0
+physics_weight: 1.0
 physics_forcing_term: 1.0
-tv_weight: 0.0
+tv_weight: 0.01
 max_noise: 0.0
-sensor_densities: [1.0, 0.5, 0.25, 0.10, 0.05, 0.01, 0.005, 0.001]
 
 scaling:
-  permeability: 4.49996e00
-  darcy: 3.88433e-03
+  permeability: 1.0
+  darcy: 1.0
 
 checkpoint_freq: 10

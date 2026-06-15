@@ -18,28 +18,27 @@ hydra:
   job:
     chdir: True
   run:
-    dir: ./pde_bench_outputs/noisy_data_only_seed_${seed}
+    dir: ./inverse_darcy_training/physics_only_noisy_seed_${seed}
 
-max_epochs: 50
-step_size: 100
+max_epochs: 471
+step_size: 200
 gamma: 0.75
 start_lr: 0.001
-seed: 0
 
-batch_size: 64
-validation_batch_size: 8
-physics_only: False
+batch_size: 4
+validation_batch_size: 1
+seed: 0
+physics_only: True
 
 data:
-  train_path: ./datasets/PDEBench/2D_DarcyFlow_beta1.0_train_split.hdf5
-  validation_path: ./datasets/PDEBench/2D_DarcyFlow_beta1.0_val_split.hdf5
-  test_path: ./datasets/PDEBench/2D_DarcyFlow_beta1.0_test_split.hdf5
-  resolution: 128
-  pde_bench: True
+  train_path: ./datasets/Darcy_241/piececonst_r241_N1024_smooth1.hdf5
+  validation_path: ./datasets/Darcy_241/piececonst_r241_N1024_smooth2.hdf5
+  resolution: 241
+  pde_bench: False
 
 mappings:
-  permeability: "nu"
-  darcy: "tensor"
+  permeability: "coeff"
+  darcy: "sol"
 
 model:
   fno:
@@ -53,14 +52,13 @@ model:
     num_fno_modes: 12
     padding: 9
 
-physics_weight: 0.0
+physics_weight: 1.0
 physics_forcing_term: 1.0
-tv_weight: 0.0
+tv_weight: 0.01
 max_noise: 0.2
 
 scaling:
-  darcy: 1.40925e-01
-  permeability_min: 0.1
-  permeability_max: 1.0
+  permeability: 4.49996e00
+  darcy: 3.88433e-03
 
-checkpoint_freq: 2
+checkpoint_freq: 10

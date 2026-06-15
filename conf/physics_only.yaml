@@ -18,11 +18,11 @@ hydra:
   job:
     chdir: True
   run:
-    dir: ./inverse_darcy_training/physics_only
+    dir: ./inverse_darcy_training/physics_only_seed_${seed}
 
-max_epochs: 500
-step_size: 100
-gamma: 0.8
+max_epochs: 470
+step_size: 200
+gamma: 0.75
 start_lr: 0.001
 
 batch_size: 4

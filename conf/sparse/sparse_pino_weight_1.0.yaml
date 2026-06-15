@@ -18,9 +18,9 @@ hydra:
   job:
     chdir: True
   run:
-    dir: ./neural_operator_outputs/sparse/pino_{now:%Y-%m-%d_%H-%M-%S}
+    dir: ./neural_operator_outputs/sparse/pino_weight_1.0_${seed}
 
-max_epochs: 200
+max_epochs: 250
 step_size: 200
 gamma: 0.5
 start_lr: 0.001
@@ -51,7 +51,7 @@ model:
     num_fno_modes: 12
     padding: 9
 
-physics_weight: 0.2
+physics_weight: 1.0
 physics_forcing_term: 1.0
 tv_weight: 0.01
 max_noise: 0.0
@@ -61,4 +61,4 @@ scaling:
   permeability: 4.49996e00
   darcy: 3.88433e-03
 
-checkpoint_freq: 10
+checkpoint_freq: 5

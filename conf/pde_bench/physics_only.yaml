@@ -26,7 +26,7 @@ gamma: 0.75
 start_lr: 0.001
 seed: 0
 
-batch_size: 16
+batch_size: 64
 validation_batch_size: 8
 physics_only: True
 
@@ -63,4 +63,4 @@ scaling:
   permeability_min: 0.1
   permeability_max: 1.0
 
-checkpoint_freq: 10
+checkpoint_freq: 2
