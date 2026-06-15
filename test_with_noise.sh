@@ -5,7 +5,7 @@
 #SBATCH -c 1
 #SBATCH --gpus-per-task=1
 #SBATCH --mem-per-cpu=8000MB
-#SBATCH --time=01:00:00
+#SBATCH --time=04:00:00
 #SBATCH --output=tests/backup_no_physics_%j.out
 #SBATCH --error=tests/backup_no_physics_%j.err
 
@@ -27,8 +27,34 @@ export LOCAL_RANK=0
 cd /scratch/cwilczewski/physicsnemo/temp
 
 # Run inside Apptainer
-apptainer exec --nv /scratch/cwilczewski/physicsnemo/physicsnemo_26.03.sif python test_inverse_darcy.py ./neural_operator_outputs/pino --dataset ./datasets/PDEBench/2D_DarcyFlow_beta1.0_Train.hdf5 \
-    --permeability_mapping "nu" \
-    --darcy_mapping "tensor"
-# apptainer exec --nv /scratch/cwilczewski/physicsnemo/physicsnemo_26.03.sif python test_inverse_darcy.py ./neural_operator_outputs/noisy_fno
-# apptainer exec --nv /scratch/cwilczewski/physicsnemo/physicsnemo_26.03.sif python test_inverse_darcy.py ./neural_operator_outputs/noisy_pino
+# apptainer exec --nv /scratch/cwilczewski/physicsnemo/physicsnemo_26.03.sif python test_inverse_darcy.py ./inverse_darcy_training/physics_only_noisy_seed_0 \
+#     --output_dir "seeded_runs_tests_testset" \
+#     --dataset "./datasets/Darcy_241/piececonst_r241_N1024_test.hdf5"
+
+# apptainer exec --nv /scratch/cwilczewski/physicsnemo/physicsnemo_26.03.sif python test_inverse_darcy.py ./inverse_darcy_training/physics_only_seed_0 \
+#     --output_dir "seeded_runs_tests_testset" \
+#     --dataset "./datasets/Darcy_241/piececonst_r241_N1024_test.hdf5"
+
+# apptainer exec --nv /scratch/cwilczewski/physicsnemo/physicsnemo_26.03.sif python test_inverse_darcy.py ./inverse_darcy_training/physics_only_noisy_seed_1 \
+#     --output_dir "seeded_runs_tests_testset" \
+#     --dataset "./datasets/Darcy_241/piececonst_r241_N1024_test.hdf5"
+
+# apptainer exec --nv /scratch/cwilczewski/physicsnemo/physicsnemo_26.03.sif python test_inverse_darcy.py ./inverse_darcy_training/physics_only_noisy_seed_2 \
+#     --output_dir "seeded_runs_tests_testset" \
+#     --dataset "./datasets/Darcy_241/piececonst_r241_N1024_test.hdf5"
+
+# apptainer exec --nv /scratch/cwilczewski/physicsnemo/physicsnemo_26.03.sif python test_inverse_darcy.py ./inverse_darcy_training/physics_only_seed_1 \
+#     --output_dir "seeded_runs_tests_testset" \
+#     --dataset "./datasets/Darcy_241/piececonst_r241_N1024_test.hdf5"
+
+apptainer exec --nv /scratch/cwilczewski/physicsnemo/physicsnemo_26.03.sif python test_inverse_darcy.py ./seeded_runs_darcy/pino_stronger_physics_seed_2 \
+    --output_dir "seeded_runs_tests_testset" \
+    --dataset "./datasets/Darcy_241/piececonst_r241_N1024_test.hdf5"
+
+apptainer exec --nv /scratch/cwilczewski/physicsnemo/physicsnemo_26.03.sif python test_inverse_darcy.py ./seeded_runs_darcy/pino_stronger_physics_seed_0 \
+--output_dir "seeded_runs_tests_testset" \
+--dataset "./datasets/Darcy_241/piececonst_r241_N1024_test.hdf5"
+
+apptainer exec --nv /scratch/cwilczewski/physicsnemo/physicsnemo_26.03.sif python test_inverse_darcy.py ./seeded_runs_darcy/pino_stronger_physics_seed_1 \
+--output_dir "seeded_runs_tests_testset" \
+--dataset "./datasets/Darcy_241/piececonst_r241_N1024_test.hdf5"

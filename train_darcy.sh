@@ -1,21 +1,13 @@
 #!/bin/bash
-#SBATCH --job-name=darcy_fno
+#SBATCH --job-name=darcy_train
 #SBATCH --partition=gpu-a100-small
 #SBATCH -n 1
 #SBATCH -c 1
 #SBATCH --gpus-per-task=1
-#SBATCH --mem-per-cpu=8000MB
+#SBATCH --mem-per-cpu=5333MB
 #SBATCH --time=04:00:00
-#SBATCH --output=logs/darcy_physics_fno_%j.out
-#SBATCH --error=logs/darcy_physics_fno_%j.err
-set -euo pipefail
-
-mkdir -p logs
-
-# Optional: print some debugging info
-echo "Running on node: $SLURMD_NODENAME"
-echo "Job ID: $SLURM_JOB_ID"
-echo "CUDA devices: $CUDA_VISIBLE_DEVICES"
+#SBATCH --output=logs/train_%A_%a.out
+#SBATCH --error=logs/train_%A_%a.err
 
 # Avoid broken/stale distributed rendezvous variables
 export MASTER_ADDR=127.0.0.1
@@ -27,14 +19,25 @@ export LOCAL_RANK=0
 # Go to your working directory
 cd /scratch/cwilczewski/physicsnemo/temp
 
-# Run inside Apptainer --config-name config_fno_a100
-apptainer exec --nv /scratch/cwilczewski/physicsnemo/physicsnemo_26.03.sif python inverse_darcy_fno.py --config-name neural_operator_no_physics seed=1
-# apptainer exec --nv /scratch/cwilczewski/physicsnemo/physicsnemo_26.03.sif python inverse_darcy_fno.py --config-name neural_operator_noisy_pino seed=0
-# apptainer exec --nv /scratch/cwilczewski/physicsnemo/physicsnemo_26.03.sif python inverse_darcy_fno.py --config-name neural_operator_noisy seed=0
-# apptainer exec --nv /scratch/cwilczewski/physicsnemo/physicsnemo_26.03.sif python inverse_darcy_fno.py --config-name neural_operator_no_scaling seed=0
+set -euo pipefail
 
-# Run tests
-apptainer exec --nv /scratch/cwilczewski/physicsnemo/physicsnemo_26.03.sif python test_inverse_darcy.py ./inverse_darcy_training/fno_seed_1
-# apptainer exec --nv /scratch/cwilczewski/physicsnemo/physicsnemo_26.03.sif python test_inverse_darcy.py ./neural_operator_outputs/pino_no_scaling
-# apptainer exec --nv /scratch/cwilczewski/physicsnemo/physicsnemo_26.03.sif python test_inverse_darcy.py ./neural_operator_outputs/noisy_pino_no_scaling
-# apptainer exec --nv /scratch/cwilczewski/physicsnemo/physicsnemo_26.03.sif python test_inverse_darcy.py ./neural_operator_outputs/noisy_fno_no_scaling
+mkdir -p logs
+
+# Go to your working directory
+cd /scratch/cwilczewski/physicsnemo/temp
+
+# Run inside Apptainer --config-name config_fno_a100
+apptainer exec --nv /scratch/cwilczewski/physicsnemo/physicsnemo_26.03.sif python inverse_darcy_fno.py \
+ --config-name pino_stronger_physics seed=2 \
+ max_epochs=250 \
+ hydra.run.dir="seeded_runs_darcy/pino_stronger_physics_seed_2"
+
+apptainer exec --nv /scratch/cwilczewski/physicsnemo/physicsnemo_26.03.sif python inverse_darcy_fno.py \
+ --config-name pino_stronger_physics seed=1 \
+ max_epochs=250 \
+ hydra.run.dir="seeded_runs_darcy/pino_stronger_physics_seed_1"
+
+ apptainer exec --nv /scratch/cwilczewski/physicsnemo/physicsnemo_26.03.sif python inverse_darcy_fno.py \
+ --config-name pino_stronger_physics seed=0 \
+ max_epochs=250 \
+ hydra.run.dir="seeded_runs_darcy/pino_stronger_physics_seed_0"
