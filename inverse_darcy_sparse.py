@@ -138,7 +138,7 @@ def validation_step_sparse(
     return metrics
 
 
-@hydra.main(version_base="1.3", config_path="conf", config_name="sparse_pino.yaml")
+@hydra.main(version_base="1.3", config_path="conf/sparse", config_name="sparse_pino.yaml")
 def main(cfg: DictConfig):
     """Main function for the Darcy physics-informed FNO."""
     # CUDA support
