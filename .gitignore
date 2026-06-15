@@ -17,3 +17,4 @@ darcy_fno/*
 darcy_physics_informed/*
 logs/*
 test_results/*
+*.csv
