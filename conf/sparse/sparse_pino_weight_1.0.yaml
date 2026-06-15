@@ -31,7 +31,8 @@ seed: 0
 
 data:
   train_path: ./datasets/Darcy_241/piececonst_r241_N1024_smooth1.hdf5
-  validation_path: ./datasets/Darcy_241/piececonst_r241_N1024_smooth2.hdf5
+  validation_path: ./datasets/Darcy_241/piececonst_r241_N1024_validation.hdf5
+  test_path: ./datasets/Darcy_241/piececonst_r241_N1024_test.hdf5
   resolution: 241
   pde_bench: False
 
