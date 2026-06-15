@@ -288,13 +288,13 @@ if __name__ == "__main__":
         "--permeability_mapping",
         type=str,
         default=None,
-        help="Optional custom mappings YAML file for the test dataset.",
+        help="Optional custom mappings file for the test dataset.",
     )
     parser.add_argument(
         "--darcy_mapping",
         type=str,
         default=None,
-        help="Optional custom mappings YAML file for the test dataset.",
+        help="Optional custom mappings file for the test dataset.",
     )
     parser.add_argument(
         "--resolution",
