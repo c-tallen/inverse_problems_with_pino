@@ -5,7 +5,7 @@
 #SBATCH -c 1
 #SBATCH --gpus-per-task=1
 #SBATCH --mem-per-cpu=8000MB
-#SBATCH --time=01:00:00
+#SBATCH --time=00:30:00
 #SBATCH --output=tests/backup_no_physics_%j.out
 #SBATCH --error=tests/backup_no_physics_%j.err
 
@@ -27,5 +27,4 @@ export LOCAL_RANK=0
 cd /scratch/cwilczewski/physicsnemo/temp
 
 # Run inside Apptainer
-apptainer exec --nv /scratch/cwilczewski/physicsnemo/physicsnemo_26.03.sif python test_sparse_darcy.py ./neural_operator_outputs/sparse/pino
-# apptainer exec --nv /scratch/cwilczewski/physicsnemo/physicsnemo_26.03.sif python test_sparse_darcy.py ./neural_operator_outputs/sparse/fno
+apptainer exec --nv /scratch/cwilczewski/physicsnemo/physicsnemo_26.03.sif python test_sparse_darcy.py ./neural_operator_outputs/sparse/pino_2

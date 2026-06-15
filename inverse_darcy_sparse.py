@@ -36,13 +36,26 @@ from torch.utils.data import DataLoader
 from diffusion_eq import Diffusion
 from utils import CustomDataset, darcy_mask1, make_sparse_input, relative_l2_loss, total_variance, make_random_mask
 
+def set_seed(seed: int):
+    print(f"Setting random seed to: {seed}")
+    torch.manual_seed(seed)
+    np.random.seed(seed)
+
+    if torch.cuda.is_available():
+        torch.cuda.manual_seed_all(seed)
+
+    # Optional, makes things more deterministic but may slow training
+    torch.backends.cudnn.benchmark = False
+    torch.backends.cudnn.deterministic = True
+
 def validation_step_sparse(
     model,
     dataloader,
     epoch,
-    permeability_scale,
     darcy_scale,
     sensor_densities,
+    permeability_min=3.0,
+    permeability_max=12.0
 ):
     """Sparse validation step for inverse Darcy: [M * u, M] -> k."""
     model.eval()
@@ -79,7 +92,7 @@ def validation_step_sparse(
                 model_input = torch.cat([u_masked_scaled, mask], dim=1)
 
                 out_raw = model(model_input)
-                k_pred = darcy_mask1(out_raw)
+                k_pred = darcy_mask1(out_raw, permeability_min=permeability_min, permeability_max=permeability_max)
 
                 data_loss_epoch += relative_l2_loss(k_pred, k).item()
 
@@ -133,11 +146,13 @@ def main(cfg: DictConfig):
         device = torch.device("cuda")
     else:
         device = torch.device("cpu")
+    set_seed(cfg.seed)
 
     LaunchLogger.initialize()
     DistributedManager.initialize()
 
-    permeability_scale = cfg.scaling.permeability
+    permeability_min = cfg.scaling.permeability_min if cfg.data.pde_bench else 3.0
+    permeability_max = cfg.scaling.permeability_max if cfg.data.pde_bench else 12.0
     darcy_scale = cfg.scaling.darcy
     resolution = cfg.data.resolution
     mappings_dict = OmegaConf.to_container(cfg.mappings, resolve=True)
@@ -262,7 +277,7 @@ def main(cfg: DictConfig):
                 out_raw = model(model_input)
 
                 # Constrain predicted permeability to [3, 12]
-                k_pred = darcy_mask1(out_raw)
+                k_pred = darcy_mask1(out_raw, permeability_min=permeability_min, permeability_max=permeability_max)
 
                 assert k_pred.shape == k.shape, (
                     f"Output shape {k_pred.shape} does not match target shape {k.shape}"
@@ -320,9 +335,10 @@ def main(cfg: DictConfig):
                 model,
                 validation_dataloader,
                 epoch,
-                permeability_scale,
                 darcy_scale,
-                cfg.sensor_densities,
+                sensor_densities=cfg.sensor_densities,
+                permeability_min=permeability_min,
+                permeability_max=permeability_max
             )
             log.log_epoch(validation_metrics)
         if epoch % cfg.checkpoint_freq == 0 or epoch == cfg.max_epochs - 1:

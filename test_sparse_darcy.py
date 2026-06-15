@@ -1,7 +1,6 @@
 from datetime import datetime
 import sys
 
-import hydra
 import numpy as np
 import torch
 import physicsnemo
@@ -79,56 +78,93 @@ def run_test(cfg: DictConfig, model_path: pathlib.Path, output_dir: pathlib.Path
 
     with torch.inference_mode():
         for sample_i, data in enumerate(dataloader):
+            if sample_i > 5:
+                break  # TODO: remove
+
             k = data["permeability"]
             u = data["darcy"]
 
-            assert u.shape == (1, 1, resolution, resolution), (
-                f"Unexpected input shape: {u.shape}"
-            )
-            assert k.shape == (1, 1, resolution, resolution), (
-                f"Unexpected target shape: {k.shape}"
-            )
+            # Constant baseline for this sample
+            k_mean = torch.full_like(k, 7.5)
+
+            baseline_rel_l2 = (
+                torch.linalg.norm(k_mean - k) / torch.linalg.norm(k)
+            ).item()
+
+            baseline_mse = F.mse_loss(k_mean, k).item()
+
+            print("constant baseline mse:", baseline_mse)
+            print("constant baseline rel_l2:", baseline_rel_l2)
+
+            assert u.shape == (1, 1, resolution, resolution)
+            assert k.shape == (1, 1, resolution, resolution)
 
             u_std = u.std(dim=(-2, -1), keepdim=True)
 
-            # Store plotting data for first few samples
             plot_data = {}
 
             for sensor_density in sensor_densities:
                 noisy_inputs = []
-                masks = []
                 masked_inputs = []
                 model_inputs = []
+
+                # Same mask for all noise levels at this density/sample
+                mask = make_random_mask(u, sensor_density)
+
+                actual_density = mask.mean().item()
+                observed_pixels = mask.sum().item()
+
+                print(
+                    f"sample={sample_i}, "
+                    f"p target={sensor_density}, "
+                    f"p actual={actual_density:.6f}, "
+                    f"observed={observed_pixels:.0f}"
+                )
 
                 for noise_level in noise_levels:
                     noise = torch.randn_like(u) * u_std * noise_level
                     u_noisy = u + noise
 
-                    model_input, mask, u_masked = make_sparse_input(
-                        u_noisy,
-                        sensor_density,
-                        darcy_scale,
-                    )
+                    u_masked = mask * u_noisy
+                    model_input = torch.cat([u_masked / darcy_scale, mask], dim=1)
+
+                    assert model_input.shape[1] == 2
+
+                    assert torch.allclose(
+                        model_input[:, 0:1],
+                        u_masked / darcy_scale,
+                        atol=1e-6,
+                    ), "Model input channel 0 is not masked/scaled pressure."
+
+                    assert torch.allclose(
+                        model_input[:, 1:2],
+                        mask,
+                        atol=1e-6,
+                    ), "Model input channel 1 is not the mask."
+
+                    assert torch.allclose(
+                        u_masked * (1.0 - mask),
+                        torch.zeros_like(u_masked),
+                        atol=1e-6,
+                    ), "u_masked leaks values outside the mask."
 
                     noisy_inputs.append(u_noisy)
-                    masks.append(mask)
                     masked_inputs.append(u_masked)
                     model_inputs.append(model_input)
 
-                # Shape: len(noise_levels), 2, H, W
                 model_input_batch = torch.cat(model_inputs, dim=0)
 
                 out_raw = model(model_input_batch)
                 k_pred_batch = darcy_mask1(out_raw)
 
-                print(
-                    f"Processing sample {sample_i}, "
-                    f"p={sensor_density}, output shape: {out_raw.shape}"
+                assert k_pred_batch.shape == (
+                    len(noise_levels),
+                    1,
+                    resolution,
+                    resolution,
                 )
 
-                expected_unscaled = k.detach().cpu().numpy()
-                pred_unscaled_batch = k_pred_batch.detach().cpu().numpy()
-
+                # Evaluate normal sparse/noisy predictions
                 measures_per_sample = {
                     "mse": [],
                     "rel_l2": [],
@@ -139,27 +175,15 @@ def run_test(cfg: DictConfig, model_path: pathlib.Path, output_dir: pathlib.Path
                 for i, noise_level in enumerate(noise_levels):
                     pred_i = k_pred_batch[i : i + 1]
 
-                    assert pred_i.shape == k.shape, (
-                        f"Output shape {pred_i.shape} does not match target shape {k.shape}"
-                    )
+                    assert pred_i.shape == k.shape
 
                     mse = F.mse_loss(pred_i, k).item()
                     rel_l2 = (
                         torch.linalg.norm(pred_i - k) / torch.linalg.norm(k)
                     ).item()
-
                     corr = corr_indicator(pred_i, k).item()
 
-                    residuals = phy_informer.forward(
-                        {
-                            "u": u,
-                            "k": pred_i,
-                        }
-                    )
-
-                    pde_out_arr = residuals["diffusion_u"]
-                    pde_core = pde_out_arr[:, :, 2:-2, 2:-2]
-                    pde_loss = torch.mean(torch.abs(pde_core)).item()
+                    pde_loss = get_pde_loss(phy_informer, u, pred_i)
 
                     results[(sensor_density, noise_level)]["mse"] += mse
                     results[(sensor_density, noise_level)]["rel_l2"] += rel_l2
@@ -171,15 +195,37 @@ def run_test(cfg: DictConfig, model_path: pathlib.Path, output_dir: pathlib.Path
                     measures_per_sample["physics_loss"].append(pde_loss)
                     measures_per_sample["corr_indicator"].append(corr)
 
+                # Mask-only sanity test
+                model_input_mask_only = torch.cat(
+                    [torch.zeros_like(u), mask],
+                    dim=1,
+                )
+
+                pred_mask_only = darcy_mask1(model(model_input_mask_only))
+
+                mask_only_mse = F.mse_loss(pred_mask_only, k).item()
+                mask_only_rel_l2 = (
+                    torch.linalg.norm(pred_mask_only - k) / torch.linalg.norm(k)
+                ).item()
+                mask_only_corr = corr_indicator(pred_mask_only, k).item()
+
+                print(
+                    f"MASK ONLY | sample={sample_i}, p={sensor_density}: "
+                    f"MSE={mask_only_mse:.6e}, "
+                    f"RelL2={mask_only_rel_l2:.6e}, "
+                    f"Corr={mask_only_corr:.6e}"
+                )
+
                 if sample_i < 5:
                     plot_data[sensor_density] = {
                         "u": u,
                         "u_noisy_batch": torch.cat(noisy_inputs, dim=0),
-                        "mask_batch": torch.cat(masks, dim=0),
+                        "mask": mask,
                         "u_masked_batch": torch.cat(masked_inputs, dim=0),
-                        "expected_unscaled": expected_unscaled,
-                        "pred_unscaled_batch": pred_unscaled_batch,
+                        "expected_unscaled": k.detach().cpu().numpy(),
+                        "pred_unscaled_batch": k_pred_batch.detach().cpu().numpy(),
                         "measures_per_sample": measures_per_sample,
+                        "mask_only_result": pred_mask_only.detach().cpu().numpy(),
                     }
 
             if sample_i < 5:
@@ -190,12 +236,13 @@ def run_test(cfg: DictConfig, model_path: pathlib.Path, output_dir: pathlib.Path
                         sample_i=sample_i,
                         u=data_to_plot["u"],
                         u_noisy=data_to_plot["u_noisy_batch"],
-                        mask=data_to_plot["mask_batch"],
+                        mask=data_to_plot["mask"],
                         u_masked=data_to_plot["u_masked_batch"],
                         expected_unscaled=data_to_plot["expected_unscaled"],
                         predvar_unscaled=data_to_plot["pred_unscaled_batch"],
                         measures_per_sample=data_to_plot["measures_per_sample"],
                         output_dir=output_dir,
+                        mask_only_result=data_to_plot["mask_only_result"],
                     )
 
             sample_count += 1
@@ -240,6 +287,19 @@ def run_test(cfg: DictConfig, model_path: pathlib.Path, output_dir: pathlib.Path
 
     print(f"Saved sparse summary to: {summary_path}")
 
+def get_pde_loss(phy_informer, u, pred_i):
+    residuals = phy_informer.forward(
+                        {
+                            "u": u,
+                            "k": pred_i,
+                        }
+                    )
+
+    pde_out_arr = residuals["diffusion_u"]
+    pde_core = pde_out_arr[:, :, 2:-2, 2:-2]
+    pde_loss = torch.mean(torch.abs(pde_core)).item()
+    return pde_loss
+
 
 def plot_recovered_sparse(
     noise_levels,
@@ -251,10 +311,11 @@ def plot_recovered_sparse(
     u_masked,
     expected_unscaled,
     predvar_unscaled,
-    measures_per_sample,
+    measures_per_sample,    
     output_dir,
+    mask_only_result=None,
 ):
-    rows = 1 + len(noise_levels)
+    rows = 1 + (1 if mask_only_result is not None else 0) + len(noise_levels)
     cols = 5
 
     fig, ax = plt.subplots(
@@ -279,14 +340,41 @@ def plot_recovered_sparse(
         cmap="viridis",
         vmin=None,
         vmax=None,
+        sensor_mask=None,
+        draw_sensor_circles=False,
     ):
         image = np.squeeze(data)
         axis = cast(Axes, ax[row, col])
         im = axis.imshow(image, cmap=cmap, vmin=vmin, vmax=vmax)
+
+        if draw_sensor_circles and sensor_mask is not None:
+            mask_np = np.squeeze(sensor_mask)
+            ys, xs = np.where(mask_np > 0.5)
+
+            axis.scatter(
+                xs,
+                ys,
+                s=45,
+                facecolors="none",
+                edgecolors="white",
+                linewidths=0.8,
+            )
+
         axis.set_title(title, fontsize=9)
         axis.set_xticks([])
         axis.set_yticks([])
         fig.colorbar(im, ax=axis, fraction=0.046, pad=0.04)
+        
+    u_vmin = min(
+        np.min(u[0, 0].cpu().numpy()),
+        np.min(u_noisy[:, 0].cpu().numpy()),
+        np.min(u_masked[:, 0].cpu().numpy()),
+    )
+    u_vmax = max(
+        np.max(u[0, 0].cpu().numpy()),
+        np.max(u_noisy[:, 0].cpu().numpy()),
+        np.max(u_masked[:, 0].cpu().numpy()),
+    )
 
     plot_with_colorbar(
         0,
@@ -294,6 +382,8 @@ def plot_recovered_sparse(
         u[0, 0].cpu().numpy(),
         "Clean full pressure $u$",
         cmap="viridis",
+        vmin=u_vmin,
+        vmax=u_vmax,
     )
 
     plot_with_colorbar(
@@ -322,22 +412,22 @@ def plot_recovered_sparse(
         np.max(np.abs(predvar_unscaled[i, 0] - expected_unscaled[0, 0]))
         for i in range(len(noise_levels))
     )
-
-    for i, noise_level in enumerate(noise_levels):
-        row = i + 1
-
+    
+    def plot_prediction_row(row, i, noise_level):
         plot_with_colorbar(
             0,
             row,
             u_noisy[i, 0].cpu().numpy(),
             f"Noisy pressure\nnoise={noise_level}",
             cmap="viridis",
+            vmin=u_vmin,
+            vmax=u_vmax,
         )
 
         plot_with_colorbar(
             1,
             row,
-            mask[i, 0].cpu().numpy(),
+            mask.cpu().numpy(),
             f"Mask $M$\np={sensor_density}",
             cmap="gray",
             vmin=0.0,
@@ -350,6 +440,10 @@ def plot_recovered_sparse(
             u_masked[i, 0].cpu().numpy(),
             "$M \\odot u$",
             cmap="viridis",
+            vmin=u_vmin,
+            vmax=u_vmax,
+            sensor_mask=mask.cpu().numpy(),
+            draw_sensor_circles=sensor_density < 0.05,  # Only draw circles for very sparse cases
         )
 
         plot_with_colorbar(
@@ -378,6 +472,40 @@ def plot_recovered_sparse(
             vmin=0.0,
             vmax=diff_vmax,
         )
+
+    for i, noise_level in enumerate(noise_levels):
+        row = i + 1
+        plot_prediction_row(row, i, noise_level)
+    if mask_only_result is not None:
+        row += 1
+        plot_with_colorbar(
+            0,
+            row,
+            np.zeros_like(u[0, 0].cpu().numpy()),
+            "Mask-only input\n$[0, M] \\mapsto a$",
+            cmap="viridis",
+            vmin=u_vmin,
+            vmax=u_vmax,
+        )
+        plot_with_colorbar(
+            1,
+            row,
+            mask.cpu().numpy(),
+            f"Mask $M$\np={sensor_density}",
+            cmap="gray",
+            vmin=0.0,
+            vmax=1.0,
+        )
+        plot_with_colorbar(
+            3,
+            row,
+            mask_only_result[0, 0],
+            "Mask-only prediction",
+            cmap="magma",
+            vmin=3.0,
+            vmax=12.0,
+        )
+        
 
     density_name = str(sensor_density).replace(".", "p")
 
