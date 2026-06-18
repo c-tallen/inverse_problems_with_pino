@@ -14,7 +14,7 @@ from physicsnemo.sym.eq.phy_informer import PhysicsInformer
 from diffusion_eq import Diffusion
 import pathlib
 from omegaconf import DictConfig, OmegaConf
-from utils import darcy_mask1, corr_indicator, make_random_mask, make_sparse_input
+from utils import darcy_mask1, corr_indicator, make_random_mask, get_pde_loss, load_model_dir
 
 def run_test(cfg: DictConfig, model_path: pathlib.Path, output_dir: pathlib.Path):
     if torch.cuda.is_available():
@@ -34,7 +34,7 @@ def run_test(cfg: DictConfig, model_path: pathlib.Path, output_dir: pathlib.Path
     model.eval()
 
     dataset = CustomDataset(
-        cfg.data.validation_path,
+        cfg.data.test_path if hasattr(cfg.data, "test_path") else "./datasets/Darcy_241/piececonst_r241_N1024_test.hdf5",
         device=device,
         mappings=mappings_dict,
         res=cfg.data.resolution,
@@ -78,8 +78,6 @@ def run_test(cfg: DictConfig, model_path: pathlib.Path, output_dir: pathlib.Path
 
     with torch.inference_mode():
         for sample_i, data in enumerate(dataloader):
-            if sample_i > 5:
-                break  # TODO: remove
 
             k = data["permeability"]
             u = data["darcy"]
@@ -286,19 +284,6 @@ def run_test(cfg: DictConfig, model_path: pathlib.Path, output_dir: pathlib.Path
                 )
 
     print(f"Saved sparse summary to: {summary_path}")
-
-def get_pde_loss(phy_informer, u, pred_i):
-    residuals = phy_informer.forward(
-                        {
-                            "u": u,
-                            "k": pred_i,
-                        }
-                    )
-
-    pde_out_arr = residuals["diffusion_u"]
-    pde_core = pde_out_arr[:, :, 2:-2, 2:-2]
-    pde_loss = torch.mean(torch.abs(pde_core)).item()
-    return pde_loss
 
 
 def plot_recovered_sparse(
@@ -516,52 +501,6 @@ def plot_recovered_sparse(
     )
 
     plt.close(fig)
-    
-    
-def extract_epoch_from_checkpoint(path: pathlib.Path) -> int:
-    """
-    Extract epoch number from filenames like:
-        FNO.0.99.mdlus
-        model.0.123.mdlus
-
-    Returns 99, 123, etc.
-    """
-    parts = path.name.split(".")
-    for part in reversed(parts):
-        if part.isdigit():
-            return int(part)
-
-    raise ValueError(f"Could not extract epoch number from checkpoint: {path.name}")
-
-
-def find_newest_checkpoint(checkpoints_dir: pathlib.Path) -> pathlib.Path:
-    checkpoint_paths = list(checkpoints_dir.glob("*.mdlus"))
-
-    if not checkpoint_paths:
-        raise FileNotFoundError(f"No .mdlus checkpoint files found in {checkpoints_dir}")
-
-    return max(checkpoint_paths, key=extract_epoch_from_checkpoint)
-
-
-def load_model_dir(model_dir):
-    model_dir = pathlib.Path(model_dir).resolve()
-    checkpoints_dir = model_dir / "checkpoints"
-    config_path = model_dir / ".hydra" / "config.yaml"
-
-    if not model_dir.exists():
-        raise FileNotFoundError(f"Model directory does not exist: {model_dir}")
-
-    if not checkpoints_dir.exists():
-        raise FileNotFoundError(f"Checkpoints directory does not exist: {checkpoints_dir}")
-
-    if not config_path.exists():
-        raise FileNotFoundError(f"Hydra config not found: {config_path}")
-
-    model_path = find_newest_checkpoint(checkpoints_dir)
-    cfg = OmegaConf.load(config_path)
-
-    return cfg, model_path, model_dir
-
 
 if __name__ == "__main__":
     model_dir = sys.argv[1]
@@ -572,7 +511,7 @@ if __name__ == "__main__":
     timestamp = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
 
     output_dir = (
-        pathlib.Path("./test_results_sparse")
+        pathlib.Path("./test_results_sparse_final_final")
         / model_name
         / timestamp
     )

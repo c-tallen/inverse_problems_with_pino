@@ -34,7 +34,7 @@ from omegaconf import DictConfig, OmegaConf
 from torch.utils.data import DataLoader
 
 from diffusion_eq import Diffusion
-from utils import CustomDataset, darcy_mask1, relative_l2_loss, validation_step, total_variance
+from utils import CustomDataset, darcy_mask1, relative_l2_loss, validation_step, total_variance, get_pde_loss
 
 def set_seed(seed: int):
     print(f"Setting random seed to: {seed}")
@@ -83,9 +83,7 @@ def main(cfg: DictConfig):
         device=device,
         res=resolution,
     )
-    print(f"Training dataset size: {len(dataset)}")
-    print(f"Validation dataset size: {len(validation_dataset)}")
-    print("Using the batch size specified in the config:", cfg.batch_size)
+
     dataloader = DataLoader(dataset, batch_size=cfg.batch_size, shuffle=True)
 
     validation_dataloader = DataLoader(validation_dataset, batch_size=cfg.validation_batch_size, shuffle=False)
@@ -154,7 +152,7 @@ def main(cfg: DictConfig):
             "train",
             epoch=epoch,
             num_mini_batch=len(dataloader),
-            epoch_alert_freq=len(dataloader) // 20,
+            epoch_alert_freq=max(1, len(dataloader) // 20),
         ) as log:
             for data in dataloader:
                 optimizer.zero_grad()
@@ -182,22 +180,11 @@ def main(cfg: DictConfig):
                 )
 
                 # Data loss: predicted permeability vs true permeability
-                loss_data = F.mse_loss(k_pred, k) # TODO: This can be L2 or relative L2
+                loss_data = F.mse_loss(k_pred, k)
 
                 # PDE loss: enforce Darcy equation using observed u and predicted k
                 if phy_informer is not None:
-                    residuals = phy_informer.forward(
-                        {
-                            "u": u,
-                            "k": k_pred,
-                        }
-                    )
-
-                    pde_out_arr = residuals["diffusion_u"]
-
-                    # Match the spirit of the original: ignore boundary region
-                    pde_core = pde_out_arr[:, :, 2:-2, 2:-2]
-                    loss_pde = torch.mean(torch.abs(pde_core))
+                    loss_pde = get_pde_loss(phy_informer, u, k_pred)
                     # Total variation regularization on raw model output, like original code
                     loss_tv = total_variance(k_pred)
                     # Original pretraining loss:

@@ -32,6 +32,8 @@ import scipy.io
 import torch
 from hydra.utils import to_absolute_path
 from torch.utils.data import Dataset
+from omegaconf import DictConfig, OmegaConf
+import pathlib
 
 
 # list of FNO dataset url ids on drive: https://drive.google.com/drive/folders/1UnbQh2WWc6knEHbLn-ZaXrKUZhp7pjt-
@@ -411,3 +413,60 @@ def make_sparse_input(
     model_input = torch.cat([u_masked_scaled, mask], dim=1)
 
     return model_input, mask, u_masked
+
+def get_pde_loss(phy_informer, u, pred_i):
+    residuals = phy_informer.forward(
+                        {
+                            "u": u,
+                            "k": pred_i,
+                        }
+                    )
+
+    pde_out_arr = residuals["diffusion_u"]
+    pde_core = pde_out_arr[:, :, 2:-2, 2:-2]
+    pde_loss = torch.mean(torch.abs(pde_core)).item()
+    return pde_loss
+
+def extract_epoch_from_checkpoint(path: pathlib.Path) -> int:
+    """
+    Extract epoch number from filenames like:
+        FNO.0.99.mdlus
+        model.0.123.mdlus
+
+    Returns 99, 123, etc.
+    """
+    parts = path.name.split(".")
+    for part in reversed(parts):
+        if part.isdigit():
+            return int(part)
+
+    raise ValueError(f"Could not extract epoch number from checkpoint: {path.name}")
+
+
+def find_newest_checkpoint(checkpoints_dir: pathlib.Path) -> pathlib.Path:
+    checkpoint_paths = list(checkpoints_dir.glob("*.mdlus"))
+
+    if not checkpoint_paths:
+        raise FileNotFoundError(f"No .mdlus checkpoint files found in {checkpoints_dir}")
+
+    return max(checkpoint_paths, key=extract_epoch_from_checkpoint)
+
+
+def load_model_dir(model_dir):
+    model_dir = pathlib.Path(model_dir).resolve()
+    checkpoints_dir = model_dir / "checkpoints"
+    config_path = model_dir / ".hydra" / "config.yaml"
+
+    if not model_dir.exists():
+        raise FileNotFoundError(f"Model directory does not exist: {model_dir}")
+
+    if not checkpoints_dir.exists():
+        raise FileNotFoundError(f"Checkpoints directory does not exist: {checkpoints_dir}")
+
+    if not config_path.exists():
+        raise FileNotFoundError(f"Hydra config not found: {config_path}")
+
+    model_path = find_newest_checkpoint(checkpoints_dir)
+    cfg = OmegaConf.load(config_path)
+
+    return cfg, model_path, model_dir

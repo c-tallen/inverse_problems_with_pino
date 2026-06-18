@@ -34,7 +34,7 @@ from omegaconf import DictConfig, OmegaConf
 from torch.utils.data import DataLoader
 
 from diffusion_eq import Diffusion
-from utils import CustomDataset, darcy_mask1, make_sparse_input, relative_l2_loss, total_variance, make_random_mask
+from utils import CustomDataset, darcy_mask1, make_sparse_input, relative_l2_loss, total_variance, make_random_mask, get_pde_loss
 
 def set_seed(seed: int):
     print(f"Setting random seed to: {seed}")
@@ -288,18 +288,7 @@ def main(cfg: DictConfig):
 
                 # PDE loss: enforce Darcy equation using full simulated u and predicted k
                 if phy_informer is not None:
-                    residuals = phy_informer.forward(
-                        {
-                            "u": u,
-                            "k": k_pred,
-                        }
-                    )
-
-                    pde_out_arr = residuals["diffusion_u"]
-
-                    pde_core = pde_out_arr[:, :, 2:-2, 2:-2]
-                    loss_pde = torch.mean(torch.abs(pde_core))
-
+                    loss_pde = get_pde_loss(phy_informer, u, k_pred)
                     loss_tv = total_variance(k_pred)
 
                     weighted_pde = cfg.physics_weight * loss_pde
