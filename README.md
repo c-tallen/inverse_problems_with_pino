@@ -10,9 +10,9 @@ This repository contains implementations of Physics-Informed Neural Operators (P
 - [Datasets](#datasets)
 - [Training Models](#training-models)
 - [Configuration Files](#configuration-files)
-- [Results](#results)
 - [Testing](#testing)
-- [Citation](#citation)
+- [Results](#results-reproducibility)
+- [References](#references)
 
 ## Overview
 
@@ -35,6 +35,7 @@ The project requires:
 - h5py for data handling
 - matplotlib for visualization
 - numpy and scipy
+- PhysicsNEMO docker image (26.03)
 
 ## Project Structure
 
@@ -252,6 +253,12 @@ Training saves:
 
 ## Testing
 
+### Downloading dataset
+
+```bash
+python download_dataset.py
+```
+
 ### Evaluate on Test Set
 
 ```bash
@@ -284,6 +291,9 @@ To reproduce published results:
 
 ### PINO Baseline (Physics Weight 0.2)
 
+Possible configs: pino / fno_no_physics / noisy_pino / noisy_fno
+See other possibilities (prototype stage) in ./conf.
+
 ```bash
 for seed in 0 1 2; do
   python inverse_darcy_fno.py \
@@ -295,6 +305,9 @@ done
 ```
 
 ### Sparse Sensors
+
+Possible configs:
+--config-name sparse_pino_weight_1.0 / sparse_fno / sparse_pino
 
 ```bash
 python inverse_darcy_sparse.py \
